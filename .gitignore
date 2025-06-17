@@ -1,0 +1,15 @@
+# OS
+.DS_Store
+
+# IDE
+.buildpath
+.project
+.settings
+.idea/*
+
+# PACKAGE
+vendor/
+logs/
+tests/tmp/
+/composer.lock
+/.phpunit.result.cache
