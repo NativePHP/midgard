@@ -13,3 +13,6 @@ logs/
 tests/tmp/
 /composer.lock
 /.phpunit.result.cache
+
+# PHPUnit
+/.phpunit.cache
