@@ -2,8 +2,8 @@
 
 namespace Native\Api\Client\Support\Eloquent;
 
-use Native\Api\Client\Support\Contracts\Client;
 use Illuminate\Database\Connectors\ConnectorInterface;
+use Native\Api\Client\Support\Contracts\Client;
 
 class ApiConnector implements ConnectorInterface
 {
@@ -20,8 +20,7 @@ class ApiConnector implements ConnectorInterface
     /**
      * Establish the API connection.
      *
-     * @param array $config
-     * @return Client
+     * @return ApiConnection
      */
     public function connect(array $config)
     {
@@ -33,8 +32,7 @@ class ApiConnector implements ConnectorInterface
     /**
      * Create a new API connection.
      *
-     * @param  array   $config
-     * @return Client
+     * @return ApiConnection
      */
     public function createConnection(array $config)
     {

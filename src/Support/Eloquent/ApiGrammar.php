@@ -2,16 +2,23 @@
 
 namespace Native\Api\Client\Support\Eloquent;
 
-use Illuminate\Support\Arr;
-use Illuminate\Support\Str;
-use Illuminate\Support\Facades\Log;
-use Illuminate\Database\Query\Builder;
 use GuzzleHttp\Psr7\Query;
+use Illuminate\Database\Query\Builder;
 use Illuminate\Database\Query\Grammars\Grammar as BaseGrammar;
+use Illuminate\Support\Arr;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
 
 class ApiGrammar extends BaseGrammar
 {
     protected $resource_end_point;
+
+    /**
+     * The columns requested by the last compiled select, minus the star.
+     *
+     * @var array|null
+     */
+    protected $fields;
 
     /**
      * The components that make up a select clause.
@@ -31,7 +38,7 @@ class ApiGrammar extends BaseGrammar
         'offset',
         'unions',
         'lock',
-        'includes'
+        'includes',
     ];
 
     public function compileSelect(Builder $query)
@@ -68,20 +75,22 @@ class ApiGrammar extends BaseGrammar
 
         $query_string = Query::build($params);
 
-        if (count($query->wheres) === 1) {
-            if ($query->wheres[0]['column'] == 'internal_id' 
-                && $query->wheres[0]['operator'] == '=') {
-                $resource_id = $query->wheres[0]['value'];
-                unset($components['wheres']);
-            }
+        // A lone primary key filter addresses a single resource, so it belongs in the path.
+        // Nested and exists clauses have no `column` of their own, hence the null coalescing.
+        if (count($query->wheres) === 1
+            && ($query->wheres[0]['column'] ?? null) === 'internal_id'
+            && ($query->wheres[0]['operator'] ?? null) === '=') {
+            $resource_id = $query->wheres[0]['value'];
+            unset($components['wheres']);
         }
-        if (!empty($components['wheres'])) {
-            $query_string .= ($query_string ? '&' : '' ) . "{$components['wheres']}";
+
+        if (! empty($components['wheres'])) {
+            $query_string .= ($query_string ? '&' : '')."{$components['wheres']}";
         }
 
         $api_query = "{$query->getResourceEndpoint()}?{$query_string}";
 
-        if(isset($resource_id)) {
+        if (isset($resource_id)) {
             $api_query = $query->getResourceEndpoint().($resource_id ? '/'.$resource_id : '').'?'.$query_string;
         }
 
@@ -93,10 +102,11 @@ class ApiGrammar extends BaseGrammar
     public function compileInsert(Builder $query, array $values)
     {
         Log::debug('API POST', [$query->getResourceEndpoint(), $values]);
+
         return $query->getResourceEndpoint();
     }
 
-    public function compileUpdate(Builder $query, $values)
+    public function compileUpdate(Builder $query, array $values)
     {
         $resource_id = $query->bindings['where'][0];
         $this->setResourceEndpoint($query->getResourceEndpoint());
@@ -104,6 +114,7 @@ class ApiGrammar extends BaseGrammar
         unset($query->bindings['where']);
 
         Log::debug('API PUT', ["{$this->getResourceEndpoint()}/{$resource_id}", $values]);
+
         return "{$this->getResourceEndpoint()}/{$resource_id}";
     }
 
@@ -128,6 +139,7 @@ class ApiGrammar extends BaseGrammar
         unset($query->bindings['where']);
 
         Log::debug('API DELETE', ["{$this->getResourceEndpoint()}/{$resource_id}"]);
+
         return "{$this->getResourceEndpoint()}/{$resource_id}";
     }
 
@@ -140,10 +152,10 @@ class ApiGrammar extends BaseGrammar
     {
         return $this->resource_end_point;
     }
+
     /**
      * Remove * from the fields query param.
      *
-     * @param array $columns
      * @return array
      */
     protected function stripStar(?array $columns)
@@ -153,7 +165,7 @@ class ApiGrammar extends BaseGrammar
         }
 
         if (($star = array_search('*', $columns)) !== false) {
-            unset($columns[ $star ]);
+            unset($columns[$star]);
         }
 
         return $this->fields = array_values($columns);
@@ -176,17 +188,17 @@ class ApiGrammar extends BaseGrammar
 
         foreach ($query->wheres as $group => $wheres) {
             if (! in_array($wheres['type'], ['Basic', 'Nested', 'Null', 'NotNull', 'In', 'NotIn', 'between', 'Exists'])) {
-                Log::warn("Missing where type handler for type: {$wheres['type']}");
+                Log::warning("Missing where type handler for type: {$wheres['type']}");
                 Log::info('Wheres', $wheres);
+
                 continue;
             }
 
-            if (!empty($wheres['column']) && Str::contains($wheres['column'], '.')) {
+            if (! empty($wheres['column']) && Str::contains($wheres['column'], '.')) {
                 $searches = ["{$query->from}.", '.'];
                 $replacements = ['', ':'];
                 $wheres['column'] = str_replace($searches, $replacements, $wheres['column']);
             }
-
 
             switch ($wheres['type']) {
                 case 'Basic':
@@ -227,13 +239,13 @@ class ApiGrammar extends BaseGrammar
                             'column' => $wheres['column'],
                             'value' => $wheres['values'][0],
                             'operator' => '>=',
-                            'boolean' => $wheres['boolean']
+                            'boolean' => $wheres['boolean'],
                         ],
                         [
                             'column' => $wheres['column'],
                             'value' => $wheres['values'][1],
                             'operator' => '<=',
-                            'boolean' => $wheres['boolean']
+                            'boolean' => $wheres['boolean'],
                         ],
                     ];
                     break;
@@ -245,11 +257,11 @@ class ApiGrammar extends BaseGrammar
                         if (array_key_exists('type', $where_clause) && $where_clause['type'] === 'Basic') {
                             $wheres = [
                                 [
-                                    'column' => $from . ':' . $where_clause['column'],
+                                    'column' => $from.':'.$where_clause['column'],
                                     'value' => $where_clause['value'],
                                     'operator' => $where_clause['operator'],
-                                    'boolean' => $wheres['boolean']
-                                ]
+                                    'boolean' => $wheres['boolean'],
+                                ],
                             ];
 
                             break;
@@ -282,19 +294,15 @@ class ApiGrammar extends BaseGrammar
         $filter_style_string = '';
 
         if ($filter_style !== 'and') {
-            $filter_style_string = '&filter_style=' . $filter_style;
+            $filter_style_string = '&filter_style='.$filter_style;
         }
-        return $filters . $filter_style_string;
+
+        return $filters.$filter_style_string;
     }
 
     /**
      * Build a URI param for a group of filters
      *
-     * @param  Builder $query
-     * @param  string $column
-     * @param  string $operator
-     * @param  string $value
-     * @param  ?string $group
      * @return string
      */
     protected function buildFilter(Builder $query, string $column, string $operator, string $value, ?string $group)
@@ -314,11 +322,6 @@ class ApiGrammar extends BaseGrammar
 
     /**
      * Construct URI param for filter style for a group of filters
-     *
-     * @param  string $column
-     * @param  string $value
-     * @param  string $group
-     * @return string
      */
     protected function buildFilterStyle(string $column, string $value, string $group): string
     {
@@ -357,8 +360,8 @@ class ApiGrammar extends BaseGrammar
 
     protected function compileOrdersToArray(Builder $query, $orders)
     {
-        return array_map(function ($order) use ($query) {
-            return (strtolower($order['direction']) === 'desc' ? '-' : '') . $order['column'];
+        return array_map(function ($order) {
+            return (strtolower($order['direction']) === 'desc' ? '-' : '').$order['column'];
         }, $orders);
     }
 
@@ -374,7 +377,7 @@ class ApiGrammar extends BaseGrammar
             foreach ($orders as $order) {
                 ['column' => $column, 'direction' => $direction] = $order;
 
-                $sorts[] = ($direction === 'desc' ? '-' : '') . $column;
+                $sorts[] = ($direction === 'desc' ? '-' : '').$column;
             }
         }
 

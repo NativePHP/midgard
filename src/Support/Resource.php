@@ -2,10 +2,11 @@
 
 namespace Native\Api\Client\Support;
 
-use Illuminate\Support\Str;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
-use Illuminate\Database\Eloquent\Relations\HasOneOrMany;
 use Illuminate\Database\Eloquent\Relations\HasManyThrough;
+use Illuminate\Database\Eloquent\Relations\HasOneOrMany;
+use Illuminate\Support\Str;
 use Native\Api\Client\Support\Eloquent\ApiConnectionInterface;
 
 abstract class Resource extends Model
@@ -30,15 +31,20 @@ abstract class Resource extends Model
     protected $relation_methods = [];
 
     protected $relation_resources = [];
+
     /**
-     * @inheritdoc
+     * {@inheritdoc}
      */
     protected static $unguarded = true;
 
-    public function __construct(array $attributes = [])
+    /**
+     * Hydrate the relations the API inlined in the payload.
+     *
+     * Registered once per model class rather than once per instance, otherwise every
+     * `new Resource` would stack another copy of this listener on the class.
+     */
+    protected static function booted()
     {
-        parent::__construct($attributes);
-
         static::retrieved(function ($model) {
             $relationships = $model->getAttributes()['relationships'] ?? [];
 
@@ -47,8 +53,10 @@ abstract class Resource extends Model
                     continue;
                 }
 
+                $relation_models = [];
+
                 foreach ($relations as $relation_data) {
-                    $relationship_object = $this->$relationship();
+                    $relationship_object = $model->$relationship();
 
                     if ($relationship_object instanceof HasOneOrMany) {
                         $relation_models[] = $relationship_object->make($relation_data);
@@ -68,13 +76,13 @@ abstract class Resource extends Model
      * This relies on an appropriate sub-resource defined on the server. The server must perform the
      * actual hasMany/hasManyThrough as this is better all around: fewer requests, fewer queries, fewer problems.
      *
-     * @param string $related
-     * @param string $through
-     * @param null $firstKey
-     * @param null $secondKey
-     * @param null $localKey
-     * @param null $secondLocalKey
-     * @return Resource|HasManyThrough
+     * @param  string  $related
+     * @param  string  $through
+     * @param  null  $firstKey
+     * @param  null  $secondKey
+     * @param  null  $localKey
+     * @param  null  $secondLocalKey
+     * @return resource|HasManyThrough
      */
     public function hasManyThrough(
         $related,
@@ -88,7 +96,7 @@ abstract class Resource extends Model
             return parent::hasManyThrough($related, $through, $firstKey, $secondKey, $localKey, $secondLocalKey);
         }
 
-        /** @var Resource $instance */
+        /** @var resource $instance */
         $instance = new $related;
 
         $instance->setEndpointPrefix($this->newQuery()->toBase()->getResourceEndpoint($this->getKey()));
@@ -150,7 +158,7 @@ abstract class Resource extends Model
     /**
      * Get a new query builder that doesn't have any global scopes.
      *
-     * @return \Illuminate\Database\Eloquent\Builder|static
+     * @return Builder|static
      */
     public function newQueryWithoutScopes()
     {
@@ -170,7 +178,7 @@ abstract class Resource extends Model
     /**
      * Get a new query builder that doesn't have any global scopes or eager loading.
      *
-     * @return \Illuminate\Database\Eloquent\Builder|static
+     * @return Builder|static
      */
     public function newModelQuery()
     {
@@ -188,9 +196,6 @@ abstract class Resource extends Model
      *      if the resource class overrides the relationship methods (belongsTo, hasOne etc)
      *      adding the name of the method to the relation_resources array in the process..
      *      But that's a lot more work.
-     *
-     * @param $resource
-     * @return string
      */
     public function getRelationNameForResource($resource): string
     {
@@ -225,6 +230,12 @@ abstract class Resource extends Model
      */
     protected function newBaseQueryBuilder()
     {
-        return $this->getConnection()->setModel($this)->query();
+        $connection = $this->getConnection();
+
+        if (! $connection instanceof ApiConnectionInterface) {
+            return parent::newBaseQueryBuilder();
+        }
+
+        return $connection->setModel($this)->query();
     }
 }

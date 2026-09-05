@@ -2,9 +2,9 @@
 
 namespace Native\Api\Client\Support\Eloquent;
 
-use Illuminate\Support\Str;
-use Illuminate\Database\Query\Builder;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Query\Builder;
+use Illuminate\Support\Str;
 
 class ApiQueryBuilder extends Builder
 {
@@ -16,7 +16,7 @@ class ApiQueryBuilder extends Builder
 
     public $includes;
 
-    /** @var Model */
+    /** @var Model|null */
     protected $model;
 
     /**
@@ -29,14 +29,14 @@ class ApiQueryBuilder extends Builder
      *
      * TODO: Consider moving into Native\Api\Client\Support\Resource ?
      *
-     * @param string $suffix
+     * @param  string  $suffix
      * @return string
      */
     public function getResourceEndpoint($suffix = null)
     {
         $suffix = $suffix ? Str::start($suffix, '/') : '';
 
-        return $this->getModel()->getEndpointPrefix() . $this->getConnection()->getTablePrefix() . $this->from . $suffix;
+        return $this->getModel()->getEndpointPrefix().$this->getConnection()->getTablePrefix().$this->from.$suffix;
     }
 
     public function cleanBindings(array $bindings)
@@ -44,16 +44,19 @@ class ApiQueryBuilder extends Builder
         return $bindings;
     }
 
-    public function setIncludes(array $includes)
+    public function setIncludes(array $includes): void
     {
         $this->includes = $includes;
     }
 
-    public function setColumns(array $columns)
+    public function setColumns(array $columns): void
     {
         $this->columns = $columns;
     }
 
+    /**
+     * @return Model|null
+     */
     public function getModel()
     {
         return $this->model;
@@ -69,6 +72,7 @@ class ApiQueryBuilder extends Builder
     public function setQueryParams(array $params)
     {
         $this->query_params = $params;
+
         return $this;
     }
 

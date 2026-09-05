@@ -2,37 +2,91 @@
 
 namespace Native\Api\Client\Support\Eloquent;
 
+use Generator;
 use Illuminate\Database\Connection;
 use Illuminate\Database\Eloquent\Model;
 use Native\Api\Client\Support\Contracts\Client;
 
 class ApiConnection extends Connection implements ApiConnectionInterface
 {
+    /**
+     * @var Client
+     */
     protected $client;
 
+    /**
+     * @var Model|null
+     */
     protected $model;
 
     public function __construct(Client $client, array $config = [])
     {
-        $this->client = $this->pdo = $client;
-        $this->config = $config;
-        $this->postProcessor = new ApiProcessor;
-        $this->queryGrammar = new ApiGrammar;
+        $this->client = $client;
+
+        parent::__construct(
+            $client,
+            $config['database'] ?? '',
+            $config['prefix'] ?? '',
+            $config
+        );
+    }
+
+    /**
+     * Get the default query grammar instance.
+     *
+     * @return ApiGrammar
+     */
+    protected function getDefaultQueryGrammar()
+    {
+        return new ApiGrammar($this);
+    }
+
+    /**
+     * Get the default post processor instance.
+     *
+     * @return ApiProcessor
+     */
+    protected function getDefaultPostProcessor()
+    {
+        return new ApiProcessor;
+    }
+
+    /**
+     * The API has no notion of a driver, but plenty of framework internals ask for one.
+     *
+     * @return string
+     */
+    public function getDriverName()
+    {
+        return 'api';
+    }
+
+    /**
+     * @return string
+     */
+    public function getDriverTitle()
+    {
+        return 'API';
     }
 
     public function lastInsertId()
     {
-
+        //
     }
 
     public function beginTransaction()
     {
+        //
+    }
 
+    public function commit()
+    {
+        //
     }
 
     public function rollBack($toLevel = null)
     {
-
+        //
     }
 
     public function getModel()
@@ -50,38 +104,53 @@ class ApiConnection extends Connection implements ApiConnectionInterface
     /**
      * Get a new query builder instance.
      *
-     * @return \Illuminate\Database\Query\Builder
+     * @return ApiQueryBuilder
      */
     public function query()
     {
-        return (new ApiQueryBuilder(
+        $query = new ApiQueryBuilder(
             $this, $this->getQueryGrammar(), $this->getPostProcessor()
-        ))->setModel($this->model);
+        );
+
+        return $this->model ? $query->setModel($this->model) : $query;
     }
 
-    public function select($query, $bindings = [], $useReadPdo = true)
+    /**
+     * @param  string  $query
+     * @param  array  $bindings
+     * @param  bool  $useReadPdo
+     * @return array
+     */
+    public function select($query, $bindings = [], $useReadPdo = true, array $fetchUsing = [])
     {
         return $this->client->get($query);
     }
 
+    /**
+     * @param  string  $query
+     * @param  array  $bindings
+     * @return mixed
+     */
     public function insert($query, $bindings = [])
     {
-        $options = [
-            'json' => $bindings,
-        ];
-
-        return $this->client->post($query, $options);
+        return $this->client->post($query, ['json' => $bindings]);
     }
 
-    public function update($query, $bindings = [], $useReadPdo = true)
+    /**
+     * @param  string  $query
+     * @param  array  $bindings
+     * @return mixed
+     */
+    public function update($query, $bindings = [])
     {
-        $options = [
-            'json' => $bindings,
-        ];
-
-        return $this->client->patch($query, $options);
+        return $this->client->patch($query, ['json' => $bindings]);
     }
 
+    /**
+     * @param  string  $query
+     * @param  array  $bindings
+     * @return mixed
+     */
     public function delete($query, $bindings = [])
     {
         return $this->client->delete($query);
@@ -93,16 +162,16 @@ class ApiConnection extends Connection implements ApiConnectionInterface
     }
 
     /**
-     * Run a select statement against the database and returns a generator.
+     * Run a select statement against the API and return a generator.
      *
      * @param  string  $query
      * @param  array  $bindings
      * @param  bool  $useReadPdo
-     * @return \Generator
+     * @return Generator
      */
-    public function cursor($query, $bindings = [], $useReadPdo = true)
+    public function cursor($query, $bindings = [], $useReadPdo = true, array $fetchUsing = [])
     {
-        $records = $this->select($query, $bindings, $useReadPdo) ?? [];
+        $records = $this->select($query, $bindings, $useReadPdo, $fetchUsing) ?? [];
 
         foreach ($records as $record) {
             yield $record;
