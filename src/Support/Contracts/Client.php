@@ -2,8 +2,10 @@
 
 namespace Native\Api\Client\Support\Contracts;
 
+use Native\Api\Client\Support\Base;
+
 /**
- * @see \Native\Api\Client\Support\Base
+ * @see Base
  */
 interface Client
 {
@@ -19,6 +21,7 @@ interface Client
      * Disable PUT.
      *
      * @return void
+     *
      * @throws \Exception
      */
     public function put();

@@ -2,15 +2,17 @@
 
 namespace Native\Api\Client\Support;
 
-use Native\Api\Client\Support\Contracts\Client;
-use Native\Api\Client\Support\Concerns\ConfiguresCurl;
 use Exception;
 use GuzzleHttp\Client as HttpClient;
 use GuzzleHttp\Exception\BadResponseException;
-use Illuminate\Support\Str;
+use GuzzleHttp\Exception\GuzzleException;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
+use Native\Api\Client\Support\Concerns\ConfiguresCurl;
+use Native\Api\Client\Support\Contracts\Client;
 use Psr\Http\Message\ResponseInterface;
+use Psr\Http\Message\UriInterface;
 
 class Base implements Client
 {
@@ -49,7 +51,6 @@ class Base implements Client
     /**
      * Base constructor.
      *
-     * @param array $config
      * @throws Exception
      */
     public function __construct(array $config = [])
@@ -71,10 +72,11 @@ class Base implements Client
     }
 
     /**
-     * @param \Psr\Http\Message\UriInterface|string $uri
-     * @param array $options
+     * @param  UriInterface|string  $uri
+     * @param  array  $options
      * @return mixed|ResponseInterface
-     * @throws \GuzzleHttp\Exception\GuzzleException
+     *
+     * @throws GuzzleException
      */
     public function get($uri, $options = [])
     {
@@ -86,10 +88,11 @@ class Base implements Client
     }
 
     /**
-     * @param \Psr\Http\Message\UriInterface|string $uri
-     * @param array $options
+     * @param  UriInterface|string  $uri
+     * @param  array  $options
      * @return mixed|ResponseInterface
-     * @throws \GuzzleHttp\Exception\GuzzleException
+     *
+     * @throws GuzzleException
      */
     public function post($uri, $options = [])
     {
@@ -101,10 +104,11 @@ class Base implements Client
     }
 
     /**
-     * @param \Psr\Http\Message\UriInterface|string $uri
-     * @param array $options
+     * @param  UriInterface|string  $uri
+     * @param  array  $options
      * @return mixed|ResponseInterface
-     * @throws \GuzzleHttp\Exception\GuzzleException
+     *
+     * @throws GuzzleException
      */
     public function patch($uri, $options = [])
     {
@@ -116,10 +120,11 @@ class Base implements Client
     }
 
     /**
-     * @param \Psr\Http\Message\UriInterface|string $uri
-     * @param array $options
+     * @param  UriInterface|string  $uri
+     * @param  array  $options
      * @return mixed|ResponseInterface
-     * @throws \GuzzleHttp\Exception\GuzzleException
+     *
+     * @throws GuzzleException
      */
     public function delete($uri, $options = [])
     {
@@ -134,7 +139,8 @@ class Base implements Client
      * Disable PUT.
      *
      * @return void
-     * @throws \Exception
+     *
+     * @throws Exception
      */
     public function put()
     {
@@ -155,6 +161,7 @@ class Base implements Client
         if (! is_null($key) && isset($this->last_links[$key])) {
             return $this->last_links[$key];
         }
+
         return $this->last_links;
     }
 
@@ -163,16 +170,16 @@ class Base implements Client
         return $this->last_validation_errors;
     }
 
-    public function beginTransaction()
-    {
-
-    }
+    public function beginTransaction() {}
 
     /**
-     * @inheritdoc
+     * {@inheritdoc}
+     *
      * @return mixed json_decode'd response
-     * @throws \GuzzleHttp\Exception\GuzzleException
-     * @see \Native\Api\Client\Support\Base::makeRequest()
+     *
+     * @throws GuzzleException
+     *
+     * @see Base::makeRequest()
      */
     protected function makeRequestAndDecodeResponse($method, $uri, $options = [])
     {
@@ -184,11 +191,12 @@ class Base implements Client
     /**
      * Make a request to the API.
      *
-     * @param string $method get|post|patch|delete
-     * @param string $uri
-     * @param array $options
+     * @param  string  $method  get|post|patch|delete
+     * @param  string  $uri
+     * @param  array  $options
      * @return ResponseInterface
-     * @throws \GuzzleHttp\Exception\GuzzleException
+     *
+     * @throws GuzzleException
      */
     protected function makeRequest($method, $uri, $options = [])
     {
@@ -205,9 +213,9 @@ class Base implements Client
     /**
      * Decode the response.
      *
-     * @param ResponseInterface $response
      * @return mixed
-     * @throws \Exception
+     *
+     * @throws Exception
      */
     protected function decodeResponse(ResponseInterface $response)
     {
@@ -281,7 +289,7 @@ class Base implements Client
     /**
      * Capture any meta from the response and store internally.
      *
-     * @param array $body
+     * @param  array  $body
      */
     private function captureMeta($body)
     {
@@ -293,7 +301,7 @@ class Base implements Client
     /**
      * Capture any links from the response and store internally.
      *
-     * @param array $body
+     * @param  array  $body
      */
     private function captureLinks($body)
     {
@@ -305,10 +313,8 @@ class Base implements Client
     /**
      * Determine if there has been an error and if so, provide some useful feedback.
      *
-     * @param array $body
-     * @param ResponseInterface $response
      * @throws ValidationException
-     * @throws \Exception
+     * @throws Exception
      */
     private function detectAndHandleErrorResponse(array $body, ResponseInterface $response)
     {
@@ -318,11 +324,14 @@ class Base implements Client
                     $this->last_validation_errors = $body['errors'];
 
                     Log::error('Validation errors', $this->last_validation_errors);
+
                     $errors = [];
-                    foreach (data_get($body, 'errors') AS $error) {
+
+                    foreach (data_get($body, 'errors') as $error) {
                         $errors[$error['meta']['field']][] = $error['detail'];
                     }
-                    throw ValidationException::withMessages($errors)->errorBag($this->last_http_exception)->status(422);
+
+                    throw ValidationException::withMessages($errors)->status(422);
                 }
 
                 if (is_array(data_get($body, 'errors.*.detail'))) {

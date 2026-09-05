@@ -2,21 +2,22 @@
 
 namespace Native\Api\Client;
 
-use Illuminate\Database\Connection;
+use Exception;
 use GuzzleHttp\Client as HttpClient;
+use Illuminate\Contracts\Foundation\Application;
+use Illuminate\Database\Connection;
+use Illuminate\Database\Eloquent\Collection;
+use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Pagination\Paginator;
 use Illuminate\Support\Facades\Auth;
-use Illuminate\Support\Facades\Route;
-use Native\Api\Client\Auth\UserProvider;
-use Illuminate\Database\Eloquent\Collection;
-use Native\Api\Client\Support\Contracts\Client;
-use Illuminate\Pagination\LengthAwarePaginator;
-use Illuminate\Contracts\Foundation\Application;
-use Native\Api\Client\Support\Eloquent\ApiConnector;
-use Native\Api\Client\Support\Eloquent\ApiConnection;
-use Native\Api\Client\Support\Concerns\ConfiguresCurl;
 use Illuminate\Support\ServiceProvider as BaseProvider;
 use League\OAuth2\Client\Provider\GenericProvider as OAuthProvider;
+use Native\Api\Client\Auth\UserProvider;
+use Native\Api\Client\Support\Base;
+use Native\Api\Client\Support\Concerns\ConfiguresCurl;
+use Native\Api\Client\Support\Contracts\Client;
+use Native\Api\Client\Support\Eloquent\ApiConnection;
+use Native\Api\Client\Support\Eloquent\ApiConnector;
 
 class ServiceProvider extends BaseProvider
 {
@@ -30,6 +31,8 @@ class ServiceProvider extends BaseProvider
     public function boot()
     {
         $this->registerAuthProvider();
+
+        $this->loadViewsFrom($this->getViewsPath(), 'api');
 
         $this->publishAssets();
     }
@@ -54,11 +57,18 @@ class ServiceProvider extends BaseProvider
     {
         $this->mergeConfigFrom($this->getConfigPath(), 'api');
 
-        // Fake a database config
-        $this->app['config']->set('db.connections.api', ['driver' => 'api']);
+        // Fake a database config so the `api` connection can be resolved like any other
+        $this->app['config']->set('database.connections.api', [
+            'driver' => 'api',
+            'database' => 'api',
+            'prefix' => '',
+        ]);
 
-        Connection::resolverFor('api', function () {
-            return new ApiConnection($this->app->make(Client::class));
+        // Applications are free to bind their own client; this is only the fallback
+        $this->app->bindIf(Client::class, Base::class);
+
+        Connection::resolverFor('api', function ($connection, $database, $prefix, $config) {
+            return new ApiConnection($this->app->make(Client::class), $config);
         });
 
         $this->app->bind('db.connector.api', function ($app) {
@@ -70,7 +80,11 @@ class ServiceProvider extends BaseProvider
     {
         $this->publishes([
             $this->getConfigPath() => config_path('api.php'),
-        ]);
+        ], 'api-config');
+
+        $this->publishes([
+            $this->getViewsPath() => resource_path('views/vendor/api'),
+        ], 'api-views');
     }
 
     protected function registerMacros()
@@ -109,11 +123,11 @@ class ServiceProvider extends BaseProvider
             }
 
             if (! $client_id = config('api.oauth_server.client_id')) {
-                throw new \Exception('Missing env key: OAUTH_CLIENT_ID');
+                throw new Exception('Missing env key: OAUTH_CLIENT_ID');
             }
 
             if (! $client_secret = config('api.oauth_server.client_secret')) {
-                throw new \Exception('Missing env key: OAUTH_CLIENT_SECRET');
+                throw new Exception('Missing env key: OAUTH_CLIENT_SECRET');
             }
 
             $redirect_uri = config('api.oauth_server.redirect_uri');
@@ -127,16 +141,16 @@ class ServiceProvider extends BaseProvider
 
             return new OAuthProvider(
                 [
-                    'clientId'                => $client_id,
-                    'clientSecret'            => $client_secret,
-                    'redirectUri'             => $redirect_uri,
-                    'urlAuthorize'            => $base.'/oauth/authorize',
-                    'urlAccessToken'          => $base.'/oauth/token',
+                    'clientId' => $client_id,
+                    'clientSecret' => $client_secret,
+                    'redirectUri' => $redirect_uri,
+                    'urlAuthorize' => $base.'/oauth/authorize',
+                    'urlAccessToken' => $base.'/oauth/token',
                     'urlResourceOwnerDetails' => $base.'/api/user',
-                    'scopes'                  => $scopes,
+                    'scopes' => $scopes,
                 ],
                 [
-                    'httpClient' => new HttpClient($options)
+                    'httpClient' => new HttpClient($options),
                 ]
             );
         });
@@ -158,5 +172,10 @@ class ServiceProvider extends BaseProvider
     protected function getConfigPath()
     {
         return __DIR__.'/../config/api.php';
+    }
+
+    protected function getViewsPath()
+    {
+        return __DIR__.'/../resources/views';
     }
 }
