@@ -2,12 +2,14 @@
 
 namespace Native\Api\Client\Auth;
 
+use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Routing\Controller;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Session;
-use League\OAuth2\Client\Provider\GenericProvider as OAuthProvider;
 use League\OAuth2\Client\Provider\Exception\IdentityProviderException;
+use League\OAuth2\Client\Provider\GenericProvider as OAuthProvider;
+use League\OAuth2\Client\Token\AccessToken;
 
 class OAuthController extends Controller
 {
@@ -48,7 +50,8 @@ class OAuthController extends Controller
     /**
      * A standard auth attempt action.
      *
-     * @return \Illuminate\Http\RedirectResponse
+     * @return RedirectResponse
+     *
      * @throws \Exception
      */
     public function authenticate()
@@ -91,6 +94,7 @@ class OAuthController extends Controller
      * A standard auth fail response.
      *
      * @return string
+     *
      * @throws \Exception
      */
     public function unauthenticated()
@@ -101,14 +105,16 @@ class OAuthController extends Controller
     /**
      * Get the current token from session if it's set. Attempt to refresh it if it's expired.
      *
-     * @return \League\OAuth2\Client\Token\AccessToken
+     * @return AccessToken
      */
     private function getTokenFromSession()
     {
+        $token = null;
+
         if ($token = Session::get($this->token_key)) {
             if ($token->hasExpired()) {
                 $token = $this->provider->getAccessToken('refresh_token', [
-                    'refresh_token' => $token->getRefreshToken()
+                    'refresh_token' => $token->getRefreshToken(),
                 ]);
 
                 // Update the token in session
@@ -122,7 +128,7 @@ class OAuthController extends Controller
     /**
      * Generate the redirect to the auth code endpoint.
      *
-     * @return \Illuminate\Http\RedirectResponse
+     * @return RedirectResponse
      */
     private function getAuthCode()
     {
@@ -138,12 +144,14 @@ class OAuthController extends Controller
     /**
      * Generate the redirect to the auth failure route.
      *
-     * @param  string  $message
-     * @return \Illuminate\Http\RedirectResponse
+     * @param  string|null  $message
+     * @return RedirectResponse
      */
     private function redirectToFailureUri($message = null)
     {
-        return redirect($this->failure_uri)->with($message);
+        $redirect = redirect($this->failure_uri);
+
+        return $message ? $redirect->with('message', $message) : $redirect;
     }
 
     /**

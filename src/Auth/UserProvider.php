@@ -2,10 +2,12 @@
 
 namespace Native\Api\Client\Auth;
 
-use Illuminate\Support\Facades\Session;
 use Illuminate\Contracts\Auth\Authenticatable;
-use League\OAuth2\Client\Provider\GenericProvider as OAuthClient;
 use Illuminate\Contracts\Auth\UserProvider as UserProviderContract;
+use Illuminate\Support\Facades\Session;
+use League\OAuth2\Client\Provider\GenericProvider as OAuthClient;
+use League\OAuth2\Client\Token\AccessTokenInterface;
+use SensitiveParameter;
 
 class UserProvider implements UserProviderContract
 {
@@ -28,8 +30,8 @@ class UserProvider implements UserProviderContract
     /**
      * Retrieve a user by their unique identifier.
      *
-     * @param  mixed $identifier
-     * @return \Illuminate\Contracts\Auth\Authenticatable
+     * @param  mixed  $identifier
+     * @return Authenticatable|null
      */
     public function retrieveById($identifier)
     {
@@ -39,54 +41,70 @@ class UserProvider implements UserProviderContract
     /**
      * Retrieve a user by their unique identifier and "remember me" token.
      *
-     * @param  mixed $identifier
-     * @param  string $token
-     * @return \Illuminate\Contracts\Auth\Authenticatable|null
+     * @param  mixed  $identifier
+     * @param  string  $token
+     * @return Authenticatable|null
      */
-    public function retrieveByToken($identifier, $token)
+    public function retrieveByToken($identifier, #[SensitiveParameter] $token)
     {
-        // Required by interface but not used in this implementation
+        // Required by the contract, but "remember me" isn't supported against the API
+        return null;
     }
 
     /**
      * Update the "remember me" token for the given user in storage.
      *
-     * @param  \Illuminate\Contracts\Auth\Authenticatable $user
-     * @param  string $token
+     * @param  string  $token
      * @return void
      */
-    public function updateRememberToken(Authenticatable $user, $token)
+    public function updateRememberToken(Authenticatable $user, #[SensitiveParameter] $token)
     {
-        // Required by interface but not used in this implementation
+        // Required by the contract, but "remember me" isn't supported against the API
     }
 
     /**
      * Retrieve a user by the given credentials.
      *
-     * @param  array $credentials
-     * @return \Illuminate\Contracts\Auth\Authenticatable|null
+     * @return Authenticatable|null
      */
-    public function retrieveByCredentials(array $credentials)
+    public function retrieveByCredentials(#[SensitiveParameter] array $credentials)
     {
+        if (! isset($credentials['token'])) {
+            return null;
+        }
+
         return $this->fetchUser($credentials['token']);
     }
 
     /**
      * Validate a user against the given credentials.
      *
-     * @param  \Illuminate\Contracts\Auth\Authenticatable $user
-     * @param  array $credentials
      * @return bool
      */
-    public function validateCredentials(Authenticatable $user, array $credentials)
+    public function validateCredentials(Authenticatable $user, #[SensitiveParameter] array $credentials)
     {
-        return $user->active;
+        return (bool) $user->active;
+    }
+
+    /**
+     * Rehash the user's password if required and supported.
+     *
+     * The API owns the credentials, so there is nothing local to rehash.
+     *
+     * @return void
+     */
+    public function rehashPasswordIfRequired(
+        Authenticatable $user,
+        #[SensitiveParameter] array $credentials,
+        bool $force = false
+    ) {
+        //
     }
 
     /**
      * Build an Authenticatable instance out of the oauth resource owner.
      *
-     * @param string $token
+     * @param  AccessTokenInterface  $token
      * @return Authenticatable
      */
     private function fetchUser($token)
@@ -117,7 +135,7 @@ class UserProvider implements UserProviderContract
 
         // Put the user in session
         Session::put("user-{$this->user->guid}", $this->user);
-        
+
         return $this->user;
     }
 }

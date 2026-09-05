@@ -3,28 +3,27 @@
 namespace Native\Api\Client\Auth;
 
 use Closure;
+use DateTimeImmutable;
+use Illuminate\Contracts\Filesystem\Filesystem;
 use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Http\Request;
+use Lcobucci\JWT\Encoding\JoseEncoder;
+use Lcobucci\JWT\Exception as JwtException;
+use Lcobucci\JWT\Token\Parser;
+use Lcobucci\JWT\UnencryptedToken;
 use League\OAuth2\Client\Provider\Exception\IdentityProviderException;
 use League\OAuth2\Client\Provider\GenericProvider as OAuthProvider;
-use Lcobucci\JWT\Encoding\JoseEncoder;
-use Lcobucci\JWT\Token\Parser;
-use Lcobucci\JWT\Token\InvalidTokenStructure;
-use Lcobucci\JWT\Token\UnsupportedHeaderFound;
 use Native\Api\Client\Support\Contracts\Client;
 
 /**
- * Add this middleware to your global middleware stack in app/Http/Kernel.php to enable automatic retrieval of tokens
- * using the client credentials grant.
- *
- * Alternatively, add it as a route middleware if you only want it to be used on specific routes or route groups.
- *
- * Class ClientAuthentication
- * @package Native\Api\Client\Auth
+ * Register this middleware in bootstrap/app.php to enable automatic retrieval of tokens using the client
+ * credentials grant. Append it to the global stack, or alias it and attach it to specific routes or
+ * route groups. See the README for both.
  */
 class ClientAuthentication
 {
     protected $app;
+
     protected $path;
 
     /**
@@ -32,29 +31,34 @@ class ClientAuthentication
      */
     protected $provider;
 
+    /**
+     * @var Request|null
+     */
     protected $request;
-    protected $storage;
-    protected $token_parser;
 
     /**
-     * Create a new middleware instance.
-     *
-     * @param  \Illuminate\Contracts\Foundation\Application $app
+     * @var Filesystem
      */
+    protected $storage;
+
+    /**
+     * @var Parser
+     */
+    protected $token_parser;
+
     public function __construct(Application $app, OAuthProvider $provider)
     {
         $this->app = $app;
         $this->storage = $this->app->make('filesystem');
-        $this->token_parser = new Parser(new JoseEncoder());
+        $this->token_parser = new Parser(new JoseEncoder);
         $this->provider = $provider;
     }
 
     /**
      * Handle the request.
      *
-     * @param Request $request
-     * @param Closure $next
-     * @param array ...$scopes
+     * @param  Request  $request
+     * @param  string  ...$scopes
      * @return mixed
      */
     public function handle($request, Closure $next, ...$scopes)
@@ -75,18 +79,16 @@ class ClientAuthentication
 
         session()->forget([config('api.session_keys.oauth_access_token')]);
 
-
         // Finally, add the retrieved token to the client instance
         $this->app->extend(Client::class, function ($provider) use ($token) {
             return new $provider(['headers' => ['Authorization' => 'Bearer '.$token]]);
         });
 
-
         return $next($request);
     }
 
     /**
-     * Check to see if the given token has expired.
+     * Check to see if the given token is well-formed and hasn't expired.
      *
      * @param  string  $token
      * @return bool
@@ -94,9 +96,8 @@ class ClientAuthentication
     private function isTokenValid($token)
     {
         try {
-            $this->token_parser->parse($token);
-            return true;
-        } catch (InvalidTokenStructure|UnsupportedHeaderFound) {
+            return ! $this->token_parser->parse($token)->isExpired(new DateTimeImmutable);
+        } catch (JwtException) {
             return false;
         }
     }
@@ -105,33 +106,39 @@ class ClientAuthentication
      * Check to see if the given token has the requested scopes.
      *
      * @param  string  $token
-     * @param  array  $scopes
      * @return bool
      */
     private function hasRequestedScopes($token, array $scopes = [])
     {
-        $parsed_token = $this->token_parser->parse($token);
+        try {
+            $parsed_token = $this->token_parser->parse($token);
+        } catch (JwtException) {
+            return false;
+        }
+
+        if (! $parsed_token instanceof UnencryptedToken) {
+            return false;
+        }
 
         $scopes = $this->getCombinedScopes($scopes);
 
-        return empty(array_diff($scopes, $parsed_token->claims()->get('scopes')));
+        return empty(array_diff($scopes, (array) $parsed_token->claims()->get('scopes', [])));
     }
 
     /**
      * Get requested scopes combined with any default scopes.
      *
-     * @param  array  $scopes
      * @return array
      */
     private function getCombinedScopes(array $scopes = [])
     {
-        return array_unique(array_merge($this->provider->getDefaultScopes(), $scopes));
+        return array_unique(array_merge($this->provider->getDefaultScopes() ?? [], $scopes));
     }
 
     /**
      * Attempt to get a matching stored token from storage.
      *
-     * @return \Illuminate\Contracts\Filesystem\Filesystem
+     * @return string|null
      */
     private function getTokenFromStorage()
     {
@@ -140,24 +147,22 @@ class ClientAuthentication
         if ($this->storage->exists($path)) {
             return $this->storage->get($path);
         }
+
+        return null;
     }
 
     /**
      * Generate a token using the client credentials grant.
      *
-     * @param array $scopes
      * @return string
+     *
+     * @throws IdentityProviderException
      */
     private function generateToken(array $scopes = [])
     {
         $scopes = implode(' ', $this->getCombinedScopes($scopes));
 
-        try {
-            return $this->provider->getAccessToken('client_credentials', ['scope' => $scopes])->getToken();
-        } catch (IdentityProviderException $e) {
-            // TODO: Log this (and report something to the user?)
-            dd($e);
-        }
+        return $this->provider->getAccessToken('client_credentials', ['scope' => $scopes])->getToken();
     }
 
     /**
@@ -168,7 +173,7 @@ class ClientAuthentication
     private function getTokenStoragePath()
     {
         if (! $this->path) {
-            $this->path = md5($this->request->method.$this->request->pathInfo);
+            $this->path = md5($this->request->getMethod().$this->request->getPathInfo());
         }
 
         return $this->path;
