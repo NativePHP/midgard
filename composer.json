@@ -41,7 +41,8 @@
     "extra": {
         "laravel": {
             "providers": [
-                "Native\\Api\\Client\\ServiceProvider"
+                "Native\\Api\\Client\\ServiceProvider",
+                "Native\\Api\\Client\\Asgard\\AsgardServiceProvider"
             ]
         }
     },
@@ -57,5 +58,8 @@
         "format": "vendor/bin/pint"
     },
     "minimum-stability": "stable",
-    "prefer-stable": true
+    "prefer-stable": true,
+    "suggest": {
+        "nativephp/mobile": "Needed for Asgard: lets server-rendered regions be fetched over HTTP"
+    }
 }
