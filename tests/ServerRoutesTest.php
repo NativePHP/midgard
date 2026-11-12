@@ -159,3 +159,32 @@ it('keys the cache per server and Asgard key', function () {
         ->and(ServerRoutes::keyFor('https://a.test', 'k'))->not->toBe(ServerRoutes::keyFor('https://b.test', 'k'))
         ->and(ServerRoutes::keyFor('https://a.test', 'k'))->not->toBe(ServerRoutes::keyFor('https://a.test', 'j'));
 });
+
+it('boots with no server routes when the cache cannot be read', function () {
+    $broken = Mockery::mock(Illuminate\Contracts\Cache\Repository::class);
+    $broken->shouldReceive('get')->andThrow(new RuntimeException('no database yet'));
+    $registered = 0;
+
+    $routes = new ServerRoutes($broken, 'k', function () use (&$registered) {
+        $registered++;
+    }, fn () => null);
+
+    $routes->boot();
+
+    expect($registered)->toBe(0)->and($routes->cached())->toBeNull();
+});
+
+it('still registers a fetched list when the cache cannot be written', function () {
+    $broken = Mockery::mock(Illuminate\Contracts\Cache\Repository::class);
+    $broken->shouldReceive('get')->andReturn(null);
+    $broken->shouldReceive('forever')->andThrow(new RuntimeException('read-only'));
+    $got = null;
+
+    $routes = new ServerRoutes($broken, 'k', function (array $list) use (&$got) {
+        $got = $list;
+    }, fn () => null);
+
+    $routes->receive(['ok' => true, 'version' => 'v1', 'routes' => [['uri' => '/promos/{id}', 'screen' => 'heimdall.promo']]]);
+
+    expect($got)->toBe([['uri' => '/promos/{id}', 'screen' => 'heimdall.promo']]);
+});

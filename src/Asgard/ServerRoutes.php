@@ -102,7 +102,12 @@ class ServerRoutes
             return;
         }
 
-        $this->cache->forever($this->key, ['version' => $result['version'], 'routes' => array_values($result['routes'])]);
+        try {
+            $this->cache->forever($this->key, ['version' => $result['version'], 'routes' => array_values($result['routes'])]);
+        } catch (\Throwable $e) {
+            // Still register the list for this run. It just will not survive a restart.
+            Log::warning('Asgard: could not cache the server routes: '.$e->getMessage());
+        }
 
         ($this->register)(array_values($result['routes']));
     }
@@ -110,7 +115,16 @@ class ServerRoutes
     /** @return array{version: string, routes: list<array{uri: string, screen: string}>}|null */
     public function cached(): ?array
     {
-        $cached = $this->cache->get($this->key);
+        // This runs at boot, for every request and artisan command. A cache
+        // that cannot be read (no database yet, say) means no server routes,
+        // never an app that fails to start.
+        try {
+            $cached = $this->cache->get($this->key);
+        } catch (\Throwable $e) {
+            Log::warning('Asgard: could not read the cached server routes: '.$e->getMessage());
+
+            return null;
+        }
 
         return is_array($cached) && is_string($cached['version'] ?? null) && is_array($cached['routes'] ?? null)
             ? $cached
