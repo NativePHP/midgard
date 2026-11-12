@@ -38,6 +38,12 @@ class FakeAsgardServer
     /** The fragment to answer with. */
     public mixed $fragment = ['type' => 'text', 'props' => ['text' => 'hi']];
 
+    /** Gzip the answer before encrypting it, as a region that allows it would. */
+    public bool $compress = false;
+
+    /** Answer with exactly this plaintext instead of a fragment message. */
+    public ?string $plaintext = null;
+
     public function __construct(public string $key = 'test-key') {}
 
     public function client(): Client
@@ -93,7 +99,8 @@ class FakeAsgardServer
             return new Response($this->refuseWith, ['Content-Type' => 'application/json'], '{"error":"refused"}');
         }
 
-        $sealed = Wire::sealResponse($this->sessions[$session], $session, 200, json_encode(['protocol' => 1, 'region' => 'r', 'fragment' => $this->fragment]), $opened['signature']);
+        $plaintext = $this->plaintext ?? json_encode(['protocol' => 1, 'region' => 'r', 'fragment' => $this->fragment]);
+        $sealed = Wire::sealResponse($this->sessions[$session], $session, 200, $plaintext, $opened['signature'], null, null, $this->compress);
 
         if ($this->tamper !== null) {
             $sealed = ($this->tamper)($sealed);

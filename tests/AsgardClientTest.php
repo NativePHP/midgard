@@ -3,6 +3,7 @@
 use Illuminate\Support\Facades\Cache;
 use Native\Api\Client\Asgard\AsgardClient;
 use Native\Api\Client\Asgard\Security\ContentDigest;
+use Native\Api\Client\Asgard\Security\Gzip;
 use Native\Api\Client\Asgard\SessionCache;
 use Native\Api\Client\Tests\Fixtures\FakeAsgardServer;
 
@@ -142,3 +143,54 @@ it('signs the authority with a non-default port and without a default one', func
     $client = AsgardClient::make(['url' => 'http://ASGARD.test:80'] + $this->config, $server->client());
     expect($client->render(renderBody()))->toMatchArray(['ok' => true]);
 });
+
+it('undoes gzip after decrypting a compressed answer', function () {
+    $rows = array_map(fn ($i) => ['type' => 'text', 'props' => ['text' => "Row {$i}"]], range(1, 200));
+    $this->server->fragment = ['type' => 'column', 'children' => $rows];
+    $this->server->compress = true;
+    $seen = null;
+    $this->server->tamper = function ($sealed) use (&$seen) {
+        return $seen = $sealed;
+    };
+
+    expect($this->client->render(renderBody()))->toMatchArray(['ok' => true, 'fragment' => ['type' => 'column', 'children' => $rows]])
+        ->and($seen['headers']['content-encoding'])->toBe('aes128gcm')
+        ->and($seen['headers']['asgard-content-coding'])->toBe('gzip');
+});
+
+it('fails, and never hands back a fragment, when an answer inflates past the cap', function () {
+    $this->server->compress = true;
+    $this->server->plaintext = '{"fragment":"'.str_repeat('a', Gzip::MAX_INFLATED).'"}';
+
+    $result = $this->client->render(renderBody());
+
+    expect($result['ok'])->toBeFalse()
+        ->and($result)->not->toHaveKey('fragment')
+        ->and($result['error'])->toContain('inflates past');
+});
+
+it('refuses an answer whose compression marker was flipped or stripped', function (Closure $change) {
+    $this->server->fragment = ['type' => 'column', 'children' => array_map(fn ($i) => ['type' => 'text', 'props' => ['text' => "Row {$i}"]], range(1, 200))];
+    $this->server->compress = true;
+    $this->server->tamper = $change;
+
+    $result = $this->client->render(renderBody());
+
+    expect($result['ok'])->toBeFalse()->and($result)->not->toHaveKey('fragment');
+})->with([
+    'flipped' => [function ($s) {
+        $s['headers']['asgard-content-coding'] = 'identity';
+
+        return $s;
+    }],
+    'stripped' => [function ($s) {
+        unset($s['headers']['asgard-content-coding']);
+
+        return $s;
+    }],
+    'stacked content coding, as a proxy might rewrite it' => [function ($s) {
+        $s['headers']['content-encoding'] = 'gzip, aes128gcm';
+
+        return $s;
+    }],
+]);

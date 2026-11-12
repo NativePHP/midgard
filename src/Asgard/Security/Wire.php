@@ -5,7 +5,7 @@ namespace Native\Api\Client\Asgard\Security;
 use Closure;
 
 /**
- * Asgard's use of RFC 9421, RFC 9530 and RFC 8188 (protocol §7 and §8.1).
+ * Asgard's use of RFC 9421, RFC 9530, RFC 8188 and gzip (protocol §7 and §8.1).
  *
  * Seals and opens requests, responses and pushed stream events. Pure: the
  * caller supplies the keys, the clock and, in tests, the salt. Header names
@@ -41,7 +41,7 @@ final class Wire
     /** Covered after the rest, in this order, only when the request carries them. */
     public const OPTIONAL_REQUEST_COMPONENTS = ['x-asgard-method', 'authorization'];
 
-    public const RESPONSE_COMPONENTS = ['@status', 'content-type', 'content-encoding', 'content-digest', 'asgard-protocol'];
+    public const RESPONSE_COMPONENTS = ['@status', 'content-type', 'content-encoding', 'asgard-content-coding', 'content-digest', 'asgard-protocol'];
 
     // Requests
 
@@ -169,7 +169,8 @@ final class Wire
         }
 
         return [
-            'body' => self::decrypt($headers, $body, $keys->encClient, $session),
+            // Requests are never compressed (§7.4).
+            'body' => self::decode($headers['content-encoding'] ?? null, 'identity', $body, $keys->encClient, $session),
             'signature' => $signature,
             'created' => $created,
             'expires' => $expires,
@@ -181,7 +182,13 @@ final class Wire
 
     /**
      * Encrypt a response body with enc_s and sign the response with sig_s,
-     * bound to the request it answers.
+     * bound to the request it answers. With $compress, a body of at least
+     * Gzip::MIN_SIZE bytes is gzipped first. Asgard-Content-Coding says
+     * whether it was (gzip or identity), and the signature covers it.
+     *
+     * Not the stacked `Content-Encoding: gzip, aes128gcm`: Cloudflare
+     * rewrites that header to `aes128gcm` and passes the body through as it
+     * is, which breaks the signature.
      *
      * @return array{headers: array<string, string>, body: string}
      */
@@ -193,12 +200,15 @@ final class Wire
         string $requestSignature,
         ?int $created = null,
         ?string $salt = null,
+        bool $compress = false,
     ): array {
-        $body = Aes128Gcm::encrypt($plaintext, $keys->encServer, $session, Aes128Gcm::RECORD_SIZE, $salt);
+        $gzip = $compress && strlen($plaintext) >= Gzip::MIN_SIZE;
+        $body = Aes128Gcm::encrypt($gzip ? Gzip::encode($plaintext) : $plaintext, $keys->encServer, $session, Aes128Gcm::RECORD_SIZE, $salt);
 
         $headers = [
             'content-type' => 'application/json',
             'content-encoding' => 'aes128gcm',
+            'asgard-content-coding' => $gzip ? 'gzip' : 'identity',
             'content-digest' => ContentDigest::header($body),
             'asgard-protocol' => self::PROTOCOL,
         ];
@@ -257,7 +267,7 @@ final class Wire
             throw new SecurityException('The response signature does not verify.');
         }
 
-        return self::decrypt($headers, $body, $keys->encServer, $session);
+        return self::decode($headers['content-encoding'] ?? null, $headers['asgard-content-coding'] ?? '', $body, $keys->encServer, $session);
     }
 
     // Stream events
@@ -266,12 +276,16 @@ final class Wire
      * The string an event's `sig` is the HMAC of (§8.1). Lines are joined
      * with LF and there is no trailing LF.
      */
-    public static function eventBase(string $requestSignature, string $id, string $event, string $body): string
+    public static function eventBase(string $requestSignature, string $id, string $event, string $enc, string $body): string
     {
-        return "asgard/1 event\n".base64_encode($requestSignature)."\n{$id}\n{$event}\n{$body}";
+        return "asgard/1 event\n".base64_encode($requestSignature)."\n{$id}\n{$event}\n{$enc}\n{$body}";
     }
 
-    /** The `data` of a pushed event: {"body": ..., "sig": ...}. */
+    /**
+     * The `data` of a pushed event: {"body": ..., "enc": ..., "sig": ...}.
+     * `enc` is gzip when the plaintext was compressed before encryption,
+     * and identity when it was not.
+     */
     public static function sealEvent(
         SessionKeys $keys,
         string $session,
@@ -280,15 +294,19 @@ final class Wire
         string $event,
         string $plaintext,
         ?string $salt = null,
+        bool $compress = false,
     ): string {
         if (preg_match('/[\r\n]/', $id.$event)) {
             throw new SecurityException('An event id or name cannot hold a line break.');
         }
 
-        $body = Base64Url::encode(Aes128Gcm::encrypt($plaintext, $keys->encServer, $session, Aes128Gcm::RECORD_SIZE, $salt));
-        $sig = Base64Url::encode(hash_hmac('sha256', self::eventBase($requestSignature, $id, $event, $body), $keys->sigServer, true));
+        $gzip = $compress && strlen($plaintext) >= Gzip::MIN_SIZE;
+        $enc = $gzip ? 'gzip' : 'identity';
 
-        return json_encode(['body' => $body, 'sig' => $sig], JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
+        $body = Base64Url::encode(Aes128Gcm::encrypt($gzip ? Gzip::encode($plaintext) : $plaintext, $keys->encServer, $session, Aes128Gcm::RECORD_SIZE, $salt));
+        $sig = Base64Url::encode(hash_hmac('sha256', self::eventBase($requestSignature, $id, $event, $enc, $body), $keys->sigServer, true));
+
+        return json_encode(['body' => $body, 'enc' => $enc, 'sig' => $sig], JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
     }
 
     /** Verify a pushed event against the stream request that opened it, then decrypt it. */
@@ -302,12 +320,13 @@ final class Wire
     ): string {
         $json = json_decode($data, true);
 
-        if (! is_array($json) || array_keys($json) !== ['body', 'sig'] || ! is_string($json['body']) || ! is_string($json['sig'])) {
-            throw new SecurityException('An event must be {"body", "sig"}.');
+        if (! is_array($json) || array_keys($json) !== ['body', 'enc', 'sig']
+            || ! is_string($json['body']) || ! is_string($json['sig']) || ! in_array($json['enc'], ['gzip', 'identity'], true)) {
+            throw new SecurityException('An event must be {"body", "enc", "sig"} with enc gzip or identity.');
         }
 
         $sig = Base64Url::decode($json['sig']);
-        $expected = hash_hmac('sha256', self::eventBase($requestSignature, $id, $event, $json['body']), $keys->sigServer, true);
+        $expected = hash_hmac('sha256', self::eventBase($requestSignature, $id, $event, $json['enc'], $json['body']), $keys->sigServer, true);
 
         if ($sig === null || ! hash_equals($expected, $sig)) {
             throw new SecurityException('The event signature does not verify.');
@@ -319,7 +338,7 @@ final class Wire
             throw new SecurityException('The event body is not base64url.');
         }
 
-        return self::decrypt(['content-encoding' => 'aes128gcm'], $body, $keys->encServer, $session);
+        return self::decode('aes128gcm', $json['enc'], $body, $keys->encServer, $session);
     }
 
     // Internals
@@ -468,17 +487,27 @@ final class Wire
         }
     }
 
-    /** @param array<string, string> $headers */
-    private static function decrypt(array $headers, string $body, string $key, string $session): string
+    /**
+     * Undo what was done to a body, in reverse: decrypt the aes128gcm
+     * content coding, then gunzip when $coding (the signed
+     * Asgard-Content-Coding or event `enc`) is gzip. Anything else is refused.
+     */
+    private static function decode(?string $contentEncoding, string $coding, string $body, string $key, string $session): string
     {
-        if (($headers['content-encoding'] ?? null) !== 'aes128gcm') {
-            throw new SecurityException('The body is not aes128gcm.');
+        if ($contentEncoding === null || strtolower(trim($contentEncoding)) !== 'aes128gcm') {
+            throw new SecurityException("The content coding [{$contentEncoding}] is not aes128gcm.");
+        }
+
+        if ($coding !== 'gzip' && $coding !== 'identity') {
+            throw new SecurityException("The Asgard content coding [{$coding}] is not gzip or identity.");
         }
 
         if (! hash_equals($session, Aes128Gcm::keyId($body))) {
             throw new SecurityException('The body was encrypted for another session.');
         }
 
-        return Aes128Gcm::decrypt($body, $key);
+        $plaintext = Aes128Gcm::decrypt($body, $key);
+
+        return $coding === 'gzip' ? Gzip::decode($plaintext) : $plaintext;
     }
 }

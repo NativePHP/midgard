@@ -33,11 +33,11 @@ beforeEach(function () {
         array_change_key_case($this->stream->lastOpen(HOME)['headers']),
         $this->stream->lastOpen(HOME)['body'],
     );
-    $this->event = function (array $payload, string $id = '3', ?string $signature = null) {
+    $this->event = function (array $payload, string $id = '3', ?string $signature = null, bool $compress = false) {
         $open = ($this->opened)();
 
         return new StreamMessage(HOME, 'fragment', Wire::sealEvent(
-            $this->server->sessions[$open['session']], $open['session'], $signature ?? $open['signature'], $id, 'fragment', json_encode($payload),
+            $this->server->sessions[$open['session']], $open['session'], $signature ?? $open['signature'], $id, 'fragment', json_encode($payload), null, $compress,
         ), $id);
     };
 });
@@ -90,6 +90,40 @@ it('hands a verified, decrypted fragment for a subscribed region to the pusher',
     $this->streams->receive(($this->event)(['protocol' => 1, 'region' => 'stats', 'fragment' => ['type' => 'text']]));
 
     expect($this->pushed)->toBe([['app.native.screens.home', 'stats', ['type' => 'text']]]);
+});
+
+it('unzips a compressed event before painting it', function () {
+    $this->streams->subscribe(regionRequest('stats'));
+    $rows = array_map(fn ($i) => ['type' => 'text', 'props' => ['text' => "Row {$i}"]], range(1, 200));
+    $event = ($this->event)(['protocol' => 1, 'region' => 'stats', 'fragment' => ['type' => 'column', 'children' => $rows]], '3', null, true);
+
+    expect(json_decode($event->data, true)['enc'])->toBe('gzip');
+
+    $this->streams->receive($event);
+
+    expect($this->pushed)->toBe([['app.native.screens.home', 'stats', ['type' => 'column', 'children' => $rows]]]);
+});
+
+it('drops an event whose coding marker was flipped or stripped', function () {
+    $this->streams->subscribe(regionRequest('stats'));
+    $rows = array_map(fn ($i) => ['type' => 'text', 'props' => ['text' => "Row {$i}"]], range(1, 200));
+    $event = ($this->event)(['protocol' => 1, 'region' => 'stats', 'fragment' => $rows], '3', null, true);
+    $data = json_decode($event->data, true);
+
+    $this->streams->receive(new StreamMessage(HOME, 'fragment', json_encode(['body' => $data['body'], 'enc' => 'identity', 'sig' => $data['sig']]), '3'));
+    $this->streams->receive(new StreamMessage(HOME, 'fragment', json_encode(['body' => $data['body'], 'sig' => $data['sig']]), '3'));
+
+    expect($this->pushed)->toBe([]);
+});
+
+it('drops a compressed event that inflates past the cap', function () {
+    $this->streams->subscribe(regionRequest('stats'));
+    $open = ($this->opened)();
+    $bomb = Wire::sealEvent($this->server->sessions[$open['session']], $open['session'], $open['signature'], '3', 'fragment', str_repeat(' ', 9 * 1024 * 1024), null, true);
+
+    $this->streams->receive(new StreamMessage(HOME, 'fragment', $bomb, '3'));
+
+    expect($this->pushed)->toBe([]);
 });
 
 it('drops an event that does not verify, and never paints it', function (Closure $mangle) {

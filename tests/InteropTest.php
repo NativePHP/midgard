@@ -2,6 +2,7 @@
 
 use Native\Api\Client\Asgard\Security\Base64Url;
 use Native\Api\Client\Asgard\Security\Ecdh;
+use Native\Api\Client\Asgard\Security\Gzip;
 use Native\Api\Client\Asgard\Security\SessionKeys;
 use Native\Api\Client\Asgard\Security\StructuredFields;
 use Native\Api\Client\Asgard\Security\Wire;
@@ -92,6 +93,34 @@ it('seals the stream request and its event byte for byte and opens the event', f
     $data = Wire::sealEvent($this->keys, $this->session, $sealed['signature'], $e['id'], $e['event'], $e['plaintext'], ($this->b)($e['salt']));
 
     expect($data)->toBe($e['expected']['data'])
-        ->and(Wire::eventBase($sealed['signature'], $e['id'], $e['event'], json_decode($data, true)['body']))->toBe($e['expected']['signature_base'])
+        ->and(Wire::eventBase($sealed['signature'], $e['id'], $e['event'], 'identity', json_decode($data, true)['body']))->toBe($e['expected']['signature_base'])
         ->and(Wire::openEvent($this->keys, $this->session, $sealed['signature'], $e['id'], $e['event'], $e['expected']['data']))->toBe($e['plaintext']);
+});
+
+it('gzips a large response byte for byte, then seals and opens it', function () {
+    $g = $this->v['gzip_response'];
+    $requestSignature = ($this->b)($this->v['request']['expected']['signature']);
+
+    expect(Base64Url::encode(Gzip::encode($g['plaintext'])))->toBe($g['expected']['gzip'])
+        ->and(Gzip::decode(($this->b)($g['expected']['gzip'])))->toBe($g['plaintext']);
+
+    $sealed = Wire::sealResponse($this->keys, $this->session, $g['status'], $g['plaintext'], $requestSignature, $g['created'], ($this->b)($g['salt']), $g['compress']);
+
+    expect($sealed['headers'])->toBe($g['expected']['headers'])
+        ->and($sealed['headers']['asgard-content-coding'])->toBe('gzip')
+        ->and(Base64Url::encode($sealed['body']))->toBe($g['expected']['body'])
+        ->and(Wire::openResponse($this->keys, $this->session, $g['status'], $g['expected']['headers'], ($this->b)($g['expected']['body']), $requestSignature, $g['created']))
+        ->toBe($g['plaintext']);
+});
+
+it('gzips a large stream event byte for byte and opens it', function () {
+    $g = $this->v['gzip_stream_event'];
+    $streamSignature = ($this->b)($this->v['stream_request']['expected']['signature']);
+
+    $data = Wire::sealEvent($this->keys, $this->session, $streamSignature, $g['id'], $g['event'], $g['plaintext'], ($this->b)($g['salt']), $g['compress']);
+
+    expect($data)->toBe($g['expected']['data'])
+        ->and(json_decode($data, true)['enc'])->toBe('gzip')
+        ->and(Wire::eventBase($streamSignature, $g['id'], $g['event'], 'gzip', json_decode($data, true)['body']))->toBe($g['expected']['signature_base'])
+        ->and(Wire::openEvent($this->keys, $this->session, $streamSignature, $g['id'], $g['event'], $g['expected']['data']))->toBe($g['plaintext']);
 });
