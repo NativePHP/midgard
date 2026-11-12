@@ -21,8 +21,10 @@ beforeEach(function () {
     );
     $this->client->handshake();
     $this->pushed = [];
-    $this->streams = new RegionStreams($this->client, function ($component, $region, $fragment) {
+    $this->chromes = [];
+    $this->streams = new RegionStreams($this->client, function ($component, $region, $fragment, $chrome = null) {
         $this->pushed[] = [$component, $region, $fragment];
+        $this->chromes[] = $chrome;
 
         return 1;
     });
@@ -90,6 +92,16 @@ it('hands a verified, decrypted fragment for a subscribed region to the pusher',
     $this->streams->receive(($this->event)(['protocol' => 1, 'region' => 'stats', 'fragment' => ['type' => 'text']]));
 
     expect($this->pushed)->toBe([['app.native.screens.home', 'stats', ['type' => 'text']]]);
+});
+
+it('hands a server screen\'s chrome to the pusher with its fragment', function () {
+    $this->streams->subscribe(regionRequest('screen'));
+
+    $this->streams->receive(($this->event)(['protocol' => 1, 'region' => 'screen', 'fragment' => ['type' => 'text'], 'chrome' => ['nav_bar' => ['title' => 'P']]]));
+    $this->streams->receive(($this->event)(['protocol' => 1, 'region' => 'screen', 'fragment' => ['type' => 'text'], 'chrome' => 'nope']));
+
+    expect($this->pushed)->toHaveCount(2)
+        ->and($this->chromes)->toBe([['nav_bar' => ['title' => 'P']], null]);
 });
 
 it('unzips a compressed event before painting it', function () {

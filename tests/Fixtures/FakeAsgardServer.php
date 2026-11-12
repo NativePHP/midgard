@@ -41,6 +41,14 @@ class FakeAsgardServer
     /** Gzip the answer before encrypting it, as a region that allows it would. */
     public bool $compress = false;
 
+    /** Chrome to send with each fragment, as a server screen does. */
+    public ?array $chrome = null;
+
+    /** The route list the routes endpoint answers with. */
+    public array $routes = [['uri' => '/promos/{id}', 'screen' => 'promos.show']];
+
+    public string $routesVersion = 'v1';
+
     /** Answer with exactly this plaintext instead of a fragment message. */
     public ?string $plaintext = null;
 
@@ -99,7 +107,11 @@ class FakeAsgardServer
             return new Response($this->refuseWith, ['Content-Type' => 'application/json'], '{"error":"refused"}');
         }
 
-        $plaintext = $this->plaintext ?? json_encode(['protocol' => 1, 'region' => 'r', 'fragment' => $this->fragment]);
+        $message = str_ends_with($path, '/routes')
+            ? ['protocol' => 1, 'version' => $this->routesVersion, 'routes' => $this->routes]
+            : ['protocol' => 1, 'region' => 'r', 'fragment' => $this->fragment] + ($this->chrome !== null ? ['chrome' => $this->chrome] : []);
+
+        $plaintext = $this->plaintext ?? json_encode($message);
         $sealed = Wire::sealResponse($this->sessions[$session], $session, 200, $plaintext, $opened['signature'], null, null, $this->compress);
 
         if ($this->tamper !== null) {

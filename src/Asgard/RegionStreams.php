@@ -42,7 +42,7 @@ class RegionStreams
     protected array $subscriptions = [];
 
     /**
-     * @param  Closure(string $component, string $region, array $fragment): int  $pusher
+     * @param  Closure(string $component, string $region, array $fragment, ?array $chrome): int  $pusher
      * @param  (Closure(Closure(bool): void): void)|null  $refresh  Gets a new session off the UI lane, then calls back.
      *                                                              Without one, the handshake runs inline (tests).
      */
@@ -107,7 +107,10 @@ class RegionStreams
             return;
         }
 
-        ($this->pusher)($component, $region, $payload['fragment']);
+        // A server screen's event carries its chrome too, checked by the screen.
+        $chrome = $payload['chrome'] ?? null;
+
+        ($this->pusher)($component, $region, $payload['fragment'], is_array($chrome) ? $chrome : null);
     }
 
     public function opened(StreamOpened $event): void

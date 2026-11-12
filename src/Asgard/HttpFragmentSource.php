@@ -21,6 +21,10 @@ use Native\Mobile\Edge\Asgard\ServerRegion;
  * A server action (a tap inside a fragment, protocol §10.2) goes to the same
  * endpoint with an `action` member and is answered the same way.
  *
+ * A server screen (§12) is a region too, named `screen`, and its answer
+ * carries chrome next to the fragment. The chrome is handed over with it,
+ * and the screen checks it before it wears it.
+ *
  * Every call is signed and encrypted (protocol §7) by AsgardClient, which
  * also handshakes when there is no session. A fragment whose response does
  * not verify never reaches the region.
@@ -67,7 +71,7 @@ class HttpFragmentSource implements FragmentSource
         AsyncTask::dispatch(static fn () => RenderCall::send($config, $body))
             ->finished(function ($result) use ($request, $endpoint, $what, $streams) {
                 if (is_array($result) && ($result['ok'] ?? false)) {
-                    ServerRegion::deliver($request, $result['fragment']);
+                    ServerRegion::deliver($request, $result['fragment'], $result['chrome'] ?? null);
                     $streams?->subscribe($request);
 
                     return;

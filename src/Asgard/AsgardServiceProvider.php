@@ -2,6 +2,7 @@
 
 namespace Native\Api\Client\Asgard;
 
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\ServiceProvider;
@@ -11,11 +12,17 @@ use Native\Api\Client\Asgard\Events\StreamOpened;
 use Native\Mobile\AsyncTask;
 use Native\Mobile\Edge\Asgard\Contracts\FragmentSource;
 use Native\Mobile\Edge\Asgard\ServerRegion;
+use Native\Mobile\Edge\NativeRouter;
+use Native\Mobile\Events\Screen\ScreenMounted;
 
 /**
  * Binds the HTTP fragment source when the app runs nativephp/mobile and has
  * an Asgard server and key configured. Otherwise it does nothing, and
  * mobile's own null source keeps every region on its placeholder.
+ *
+ * With a server configured it also registers the server's screen routes:
+ * the cached list at boot, and a fresh one fetched in the background once
+ * the first screen has mounted (ServerRoutes).
  */
 class AsgardServiceProvider extends ServiceProvider
 {
@@ -36,11 +43,27 @@ class AsgardServiceProvider extends ServiceProvider
         if (config('midgard.asgard.stream')) {
             $this->app->singleton(RegionStreams::class, fn () => new RegionStreams(
                 AsgardClient::make($config),
-                static fn (string $component, string $region, array $fragment) => ServerRegion::push($component, $region, $fragment),
+                static fn (string $component, string $region, array $fragment, ?array $chrome = null) => ServerRegion::push($component, $region, $fragment, $chrome),
                 // The handshake is network, so it runs on an AsyncTask lane.
                 static fn (\Closure $then) => AsyncTask::dispatch(static fn () => RenderCall::handshake($config))
                     ->finished(fn ($ok) => $then($ok === true))
                     ->failed(fn () => $then(false)),
+            ));
+        }
+
+        // Server screens: their routes come from the server, cached so they
+        // work offline, and are fetched again in the background.
+        if (method_exists(NativeRouter::class, 'registerServerRoutes')) {
+            $this->app->singleton(ServerRoutes::class, fn () => new ServerRoutes(
+                Cache::store($config['store']),
+                ServerRoutes::keyFor($config['url'], $config['key']),
+                static fn (array $routes) => NativeRouter::registerServerRoutes($routes),
+                // The fetch is network, so it runs on an AsyncTask lane. Its
+                // answer is taken on whichever screen is showing by then.
+                static fn (\Closure $then) => AsyncTask::dispatch(static fn () => RenderCall::routes($config))
+                    ->anyScreen()
+                    ->finished(fn ($result) => $then(is_array($result) ? $result : ['ok' => false, 'error' => 'no answer']))
+                    ->failed(fn (\Throwable $e) => $then(['ok' => false, 'error' => $e->getMessage()])),
             ));
         }
 
@@ -53,6 +76,16 @@ class AsgardServiceProvider extends ServiceProvider
     public function boot(): void
     {
         $this->publishes([__DIR__.'/../../config/midgard.php' => config_path('midgard.php')], 'midgard-config');
+
+        if ($this->app->bound(ServerRoutes::class)) {
+            $routes = $this->app->make(ServerRoutes::class);
+
+            // The cached list, now: no network, so boot never waits on it.
+            $routes->boot();
+
+            // A fresh list once the first screen is up, in the background.
+            Event::listen(ScreenMounted::class, fn () => $routes->refresh());
+        }
 
         if ($this->app->bound(RegionStreams::class)) {
             $streams = fn () => $this->app->make(RegionStreams::class);
