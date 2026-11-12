@@ -45,7 +45,7 @@ class AsgardServiceProvider extends ServiceProvider
                 AsgardClient::make($config),
                 static fn (string $component, string $region, array $fragment, ?array $chrome = null) => ServerRegion::push($component, $region, $fragment, $chrome),
                 // The handshake is network, so it runs on an AsyncTask lane.
-                static fn (\Closure $then) => AsyncTask::dispatch(static fn () => RenderCall::handshake($config))
+                static fn (\Closure $then) => AsyncTask::dispatch(self::handshakeWork($config))
                     ->finished(fn ($ok) => $then($ok === true))
                     ->failed(fn () => $then(false)),
             ));
@@ -60,7 +60,7 @@ class AsgardServiceProvider extends ServiceProvider
                 static fn (array $routes) => NativeRouter::registerServerRoutes($routes),
                 // The fetch is network, so it runs on an AsyncTask lane. Its
                 // answer is taken on whichever screen is showing by then.
-                static fn (\Closure $then) => AsyncTask::dispatch(static fn () => RenderCall::routes($config))
+                static fn (\Closure $then) => AsyncTask::dispatch(self::routesWork($config))
                     ->anyScreen()
                     ->finished(fn ($result) => $then(is_array($result) ? $result : ['ok' => false, 'error' => 'no answer']))
                     ->failed(fn (\Throwable $e) => $then(['ok' => false, 'error' => $e->getMessage()])),
@@ -125,5 +125,22 @@ class AsgardServiceProvider extends ServiceProvider
             'timeout' => (float) config('midgard.asgard.timeout', 10),
             'store' => is_string($store) && $store !== '' ? $store : null,
         ];
+    }
+
+    /** The background handshake an AsyncTask lane runs. See routesWork(). */
+    protected static function handshakeWork(array $config): \Closure
+    {
+        return static fn () => RenderCall::handshake($config);
+    }
+
+    /**
+     * The route fetch an AsyncTask lane runs. It is built here, on a line of
+     * its own, because a serialized closure is found by the line it starts
+     * on: written inline next to the closure that dispatches it, the lane
+     * got that outer closure instead and called it with no arguments.
+     */
+    protected static function routesWork(array $config): \Closure
+    {
+        return static fn () => RenderCall::routes($config);
     }
 }

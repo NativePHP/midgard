@@ -1,0 +1,18 @@
+<?php
+
+use Laravel\SerializableClosure\SerializableClosure;
+use Native\Api\Client\Asgard\AsgardServiceProvider;
+
+// A serialized closure is found by the line it starts on. Work written
+// inline next to the closure that dispatches it shipped that outer closure
+// to the lane instead, which then died with "too few arguments".
+it('ships the work closure, not the dispatching one, to the lane', function (string $method, string $call) {
+    $work = (new ReflectionMethod(AsgardServiceProvider::class, $method))->invoke(null, ['url' => 'https://example.test']);
+
+    $code = serialize(new SerializableClosure($work));
+
+    expect($code)->toContain($call)->not->toContain('Closure $then');
+})->with([
+    ['routesWork', 'RenderCall::routes($config)'],
+    ['handshakeWork', 'RenderCall::handshake($config)'],
+]);
