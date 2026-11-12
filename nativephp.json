@@ -1,46 +1,49 @@
 {
-    "namespace": "Asgard",
-    "platforms": ["android", "ios"],
-
-    "bridge_functions": [
-        {
-            "name": "Asgard.Stream.Open",
-            "android": "com.nativephp.plugins.asgard.AsgardStreamFunctions.Open",
-            "ios": "AsgardStreamFunctions.Open",
-            "description": "Open (or replace) a Server-Sent Events stream held by the native side"
-        },
-        {
-            "name": "Asgard.Stream.Close",
-            "android": "com.nativephp.plugins.asgard.AsgardStreamFunctions.Close",
-            "ios": "AsgardStreamFunctions.Close",
-            "description": "Close a Server-Sent Events stream and stop it reconnecting"
-        }
+  "namespace": "Asgard",
+  "platforms": [
+    "android",
+    "ios"
+  ],
+  "bridge_functions": [
+    {
+      "name": "Asgard.Stream.Open",
+      "android": "com.nativephp.plugins.asgard.AsgardStreamFunctions.Open",
+      "ios": "AsgardStreamFunctions.Open",
+      "description": "Open (or replace) a Server-Sent Events stream held by the native side"
+    },
+    {
+      "name": "Asgard.Stream.Close",
+      "android": "com.nativephp.plugins.asgard.AsgardStreamFunctions.Close",
+      "ios": "AsgardStreamFunctions.Close",
+      "description": "Close a Server-Sent Events stream and stop it reconnecting"
+    }
+  ],
+  "android": {
+    "permissions": [
+      "android.permission.INTERNET"
     ],
-
-    "android": {
-        "permissions": ["android.permission.INTERNET"]
-    },
-
-    "ios": {
-        "info_plist": {
-            "NSAppTransportSecurity": {
-                "NSExceptionDomains": {
-                    "test": {
-                        "NSIncludesSubdomains": true,
-                        "NSExceptionAllowsInsecureHTTPLoads": true
-                    }
-                }
-            }
-        },
-        "dependencies": {
-            "swift_packages": [],
-            "pods": []
+    "min_version": 26
+  },
+  "ios": {
+    "info_plist": {
+      "NSAppTransportSecurity": {
+        "NSExceptionDomains": {
+          "test": {
+            "NSIncludesSubdomains": true,
+            "NSExceptionAllowsInsecureHTTPLoads": true
+          }
         }
+      }
     },
-
-    "events": [
-        "Native\\Api\\Client\\Asgard\\Events\\StreamMessage",
-        "Native\\Api\\Client\\Asgard\\Events\\StreamOpened",
-        "Native\\Api\\Client\\Asgard\\Events\\StreamClosed"
-    ]
+    "dependencies": {
+      "swift_packages": [],
+      "pods": []
+    },
+    "min_version": 17.0
+  },
+  "events": [
+    "Native\\Api\\Client\\Asgard\\Events\\StreamMessage",
+    "Native\\Api\\Client\\Asgard\\Events\\StreamOpened",
+    "Native\\Api\\Client\\Asgard\\Events\\StreamClosed"
+  ]
 }
