@@ -1,6 +1,7 @@
 {
     "name": "nativephp/midgard",
     "description": "Client library for native apps",
+    "type": "nativephp-plugin",
     "license": "proprietary",
     "authors": [
         {
@@ -41,9 +42,12 @@
     "extra": {
         "laravel": {
             "providers": [
-                "Native\\Api\\Client\\ServiceProvider",
-                "Native\\Api\\Client\\Asgard\\AsgardServiceProvider"
+                "Native\\Api\\Client\\Asgard\\AsgardServiceProvider",
+                "Native\\Api\\Client\\ServiceProvider"
             ]
+        },
+        "nativephp": {
+            "manifest": "nativephp.json"
         }
     },
     "config": {
@@ -60,6 +64,6 @@
     "minimum-stability": "stable",
     "prefer-stable": true,
     "suggest": {
-        "nativephp/mobile": "Needed for Asgard: lets server-rendered regions be fetched over HTTP"
+        "nativephp/mobile": "Needed for Asgard: server-rendered regions and the native SSE stream"
     }
 }
