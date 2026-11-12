@@ -2,7 +2,7 @@
 
 namespace Native\Api\Client\Asgard\Events;
 
-use Native\Mobile\Events\Contracts\DispatchableFromNative;
+use Native\Mobile\Events\Concerns\BroadcastsGlobally;
 
 /**
  * One Server-Sent Event, dispatched when the blank line that ends it arrives.
@@ -11,7 +11,7 @@ use Native\Mobile\Events\Contracts\DispatchableFromNative;
  * The SSE `id:` field is `$lastEventId`: the most recent one the server sent
  * on this stream, or null if it has not sent one.
  */
-class StreamMessage implements DispatchableFromNative
+class StreamMessage implements BroadcastsGlobally
 {
     public function __construct(
         public string $id,

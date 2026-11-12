@@ -2,7 +2,7 @@
 
 namespace Native\Api\Client\Asgard\Events;
 
-use Native\Mobile\Events\Contracts\DispatchableFromNative;
+use Native\Mobile\Events\Concerns\BroadcastsGlobally;
 
 /**
  * The connection ended.
@@ -16,7 +16,7 @@ use Native\Mobile\Events\Contracts\DispatchableFromNative;
  * Replacing a stream by opening the same id again produces none for the
  * old connection.
  */
-class StreamClosed implements DispatchableFromNative
+class StreamClosed implements BroadcastsGlobally
 {
     public function __construct(
         public string $id,

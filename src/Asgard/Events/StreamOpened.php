@@ -2,13 +2,13 @@
 
 namespace Native\Api\Client\Asgard\Events;
 
-use Native\Mobile\Events\Contracts\DispatchableFromNative;
+use Native\Mobile\Events\Concerns\BroadcastsGlobally;
 
 /**
  * The server answered with a 2xx and the stream is live. Fires again after
  * every automatic reconnect.
  */
-class StreamOpened implements DispatchableFromNative
+class StreamOpened implements BroadcastsGlobally
 {
     public function __construct(public string $id) {}
 }

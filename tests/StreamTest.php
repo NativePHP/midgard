@@ -1,6 +1,7 @@
 <?php
 
 use Illuminate\Support\Facades\Event;
+use Native\Api\Client\Asgard\AsgardServiceProvider;
 use Native\Api\Client\Asgard\Events\StreamClosed;
 use Native\Api\Client\Asgard\Events\StreamMessage;
 use Native\Api\Client\Asgard\Events\StreamOpened;
@@ -155,7 +156,7 @@ it('puts the asgard provider first so it is the one a plugin registration matche
     $composer = json_decode(file_get_contents(__DIR__.'/../composer.json'), true);
 
     expect($composer['type'])->toBe('nativephp-plugin')
-        ->and($composer['extra']['laravel']['providers'][0])->toBe(\Native\Api\Client\Asgard\AsgardServiceProvider::class);
+        ->and($composer['extra']['laravel']['providers'][0])->toBe(AsgardServiceProvider::class);
 });
 
 // The fake
