@@ -13,8 +13,10 @@ use RuntimeException;
  * on the stream comes back as a Laravel event: StreamOpened, StreamMessage
  * and StreamClosed (see Events/).
  *
- * The native side reconnects by itself after a drop or a 5xx, sending
- * Last-Event-ID. It gives up on a 204 or a 4xx.
+ * After a drop or a 5xx the native side waits out its backoff, then fires
+ * StreamClosed with `reconnect` instead of replaying the old request. Open
+ * the same id again with fresh headers to carry on; the native side keeps
+ * the Last-Event-ID and backoff across that. It gives up on a 204 or a 4xx.
  */
 class Stream
 {
@@ -27,20 +29,15 @@ class Stream
     /**
      * Open (or replace) the stream with this id.
      *
-     * Without a body the request is a GET. With one it is a POST with the
-     * body sent as JSON.
+     * Without a body the request is a GET. With one it is a POST, and the
+     * body goes as given: any bytes, so it crosses the bridge in base64.
+     * The caller sets Content-Type.
      *
      * @param  array<string, string>  $headers
-     * @param  array<mixed>|null  $jsonBody
      */
-    public static function open(string $id, string $url, array $headers = [], ?array $jsonBody = null): void
+    public static function open(string $id, string $url, array $headers = [], ?string $body = null): void
     {
-        $method = $jsonBody === null ? 'GET' : 'POST';
-        $body = $jsonBody === null ? null : json_encode($jsonBody, JSON_THROW_ON_ERROR);
-
-        if ($body !== null && ! static::hasHeader($headers, 'Content-Type')) {
-            $headers['Content-Type'] = 'application/json';
-        }
+        $method = $body === null ? 'GET' : 'POST';
 
         if (static::$fake !== null) {
             static::$fake->recordOpen($id, $url, $method, $headers, $body);
@@ -54,7 +51,7 @@ class Stream
             'method' => $method,
             // An object even when empty, so the native side sees {} not [].
             'headers' => (object) $headers,
-            'body' => $body,
+            'body' => $body === null ? null : base64_encode($body),
         ]);
     }
 
@@ -110,19 +107,5 @@ class Stream
                 "{$function} failed: ".($decoded['message'] ?? $decoded['code'] ?? 'unknown error')
             );
         }
-    }
-
-    /**
-     * @param  array<string, string>  $headers
-     */
-    protected static function hasHeader(array $headers, string $name): bool
-    {
-        foreach (array_keys($headers) as $key) {
-            if (strcasecmp((string) $key, $name) === 0) {
-                return true;
-            }
-        }
-
-        return false;
     }
 }

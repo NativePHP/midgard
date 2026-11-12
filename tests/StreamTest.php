@@ -38,25 +38,19 @@ it('opens a GET stream through the bridge', function () {
         ]);
 });
 
-it('opens a POST stream with a JSON body', function () {
-    Stream::open('regions', 'https://api.test/stream', ['X-Team' => '7'], ['regions' => ['home'], 'n' => 1]);
+it('opens a POST stream with the body in base64, so any bytes cross the bridge', function () {
+    $body = "\x00\xff ciphertext";
+    Stream::open('regions', 'https://api.test/stream', ['Content-Type' => 'application/json'], $body);
 
     $params = $GLOBALS['nativephp_test_calls'][0]['params'];
 
     expect($params['method'])->toBe('POST')
-        ->and($params['body'])->toBe('{"regions":["home"],"n":1}')
-        ->and($params['headers'])->toBe(['X-Team' => '7', 'Content-Type' => 'application/json']);
+        ->and(base64_decode($params['body'], true))->toBe($body)
+        ->and($params['headers'])->toBe(['Content-Type' => 'application/json']);
 });
 
-it('keeps a content type the caller set, whatever its case', function () {
-    Stream::open('a', 'https://api.test/s', ['content-type' => 'application/vnd.api+json'], ['x' => 1]);
-
-    expect($GLOBALS['nativephp_test_calls'][0]['params']['headers'])
-        ->toBe(['content-type' => 'application/vnd.api+json']);
-});
-
-it('sends no content type for a GET', function () {
-    Stream::open('a', 'https://api.test/s');
+it('sends no content type of its own', function () {
+    Stream::open('a', 'https://api.test/s', [], '{}');
 
     expect($GLOBALS['nativephp_test_calls'][0]['params']['headers'])->toBe([]);
 });
@@ -67,13 +61,13 @@ it('sends empty headers as a JSON object', function () {
     expect($GLOBALS['nativephp_test_raw'][0])->toContain('"headers":{}');
 });
 
-it('treats a POST with an empty body array as a POST', function () {
-    Stream::open('a', 'https://api.test/s', [], []);
+it('treats a POST with an empty body as a POST', function () {
+    Stream::open('a', 'https://api.test/s', [], '');
 
     $params = $GLOBALS['nativephp_test_calls'][0]['params'];
 
     expect($params['method'])->toBe('POST')
-        ->and($params['body'])->toBe('[]');
+        ->and($params['body'])->toBe('');
 });
 
 it('closes a stream through the bridge', function () {
@@ -107,7 +101,7 @@ it('ignores a successful native answer', function () {
 it('has native events that carry the stream details', function () {
     $message = new StreamMessage('regions', 'tick', '{"n":1}', '12');
     $opened = new StreamOpened('regions');
-    $closed = new StreamClosed('regions', 'HTTP 503', true);
+    $closed = new StreamClosed('regions', 'HTTP 419', false, 419);
 
     expect($message)->toBeInstanceOf(DispatchableFromNative::class)
         ->and($message->id)->toBe('regions')
@@ -117,18 +111,20 @@ it('has native events that carry the stream details', function () {
         ->and($opened)->toBeInstanceOf(DispatchableFromNative::class)
         ->and($opened->id)->toBe('regions')
         ->and($closed)->toBeInstanceOf(DispatchableFromNative::class)
-        ->and($closed->error)->toBe('HTTP 503')
-        ->and($closed->willReconnect)->toBeTrue();
+        ->and($closed->error)->toBe('HTTP 419')
+        ->and($closed->reconnect)->toBeFalse()
+        ->and($closed->status)->toBe(419);
 });
 
 it('builds the events from a native payload the way the framework does', function () {
     // The native side sends named keys, and the framework unpacks them into the constructor.
     $message = new StreamMessage(...['id' => 'a', 'event' => 'message', 'data' => 'x', 'lastEventId' => null]);
-    $closed = new StreamClosed(...['id' => 'a', 'error' => null, 'willReconnect' => false]);
+    $closed = new StreamClosed(...['id' => 'a', 'error' => 'timed out', 'reconnect' => true, 'status' => null]);
 
     expect($message->lastEventId)->toBeNull()
-        ->and($closed->error)->toBeNull()
-        ->and($closed->willReconnect)->toBeFalse();
+        ->and($closed->error)->toBe('timed out')
+        ->and($closed->reconnect)->toBeTrue()
+        ->and($closed->status)->toBeNull();
 });
 
 it('lists every event in the plugin manifest', function () {
@@ -164,7 +160,7 @@ it('puts the asgard provider first so it is the one a plugin registration matche
 it('records opens and closes without touching the bridge', function () {
     $fake = Stream::fake();
 
-    Stream::open('regions', 'https://api.test/stream', ['A' => 'b'], ['x' => 1]);
+    Stream::open('regions', 'https://api.test/stream', ['A' => 'b'], '{"x":1}');
     Stream::close('other');
 
     expect($GLOBALS['nativephp_test_calls'])->toBe([])
@@ -173,7 +169,7 @@ it('records opens and closes without touching the bridge', function () {
             'id' => 'regions',
             'url' => 'https://api.test/stream',
             'method' => 'POST',
-            'headers' => ['A' => 'b', 'Content-Type' => 'application/json'],
+            'headers' => ['A' => 'b'],
             'body' => '{"x":1}',
         ])
         ->and($fake->closes)->toBe(['other']);
@@ -212,7 +208,7 @@ it('lets a test emit events to listeners', function () {
         $seen[] = ['message', $e->id, $e->event, $e->data, $e->lastEventId];
     });
     Event::listen(StreamClosed::class, function (StreamClosed $e) use (&$seen) {
-        $seen[] = ['closed', $e->id, $e->error, $e->willReconnect];
+        $seen[] = ['closed', $e->id, $e->error, $e->reconnect, $e->status];
     });
 
     Stream::open('regions', 'https://api.test/stream');
@@ -220,15 +216,15 @@ it('lets a test emit events to listeners', function () {
     $fake->emitOpened('regions')
         ->emit('regions', '{"n":1}')
         ->emit('regions', 'two', 'tick', '9')
-        ->emitClosed('regions', 'HTTP 503', willReconnect: true)
-        ->emitClosed('regions');
+        ->emitClosed('regions', 'HTTP 503', reconnect: true)
+        ->emitClosed('regions', 'HTTP 403', status: 403);
 
     expect($seen)->toBe([
         ['opened', 'regions'],
         ['message', 'regions', 'message', '{"n":1}', null],
         ['message', 'regions', 'tick', 'two', '9'],
-        ['closed', 'regions', 'HTTP 503', true],
-        ['closed', 'regions', null, false],
+        ['closed', 'regions', 'HTTP 503', true, null],
+        ['closed', 'regions', 'HTTP 403', false, 403],
     ]);
 });
 
@@ -236,7 +232,7 @@ it('treats a final close as the end of the stream, and a reconnecting one as not
     $fake = Stream::fake();
 
     Stream::open('a', 'https://api.test/s');
-    $fake->emitClosed('a', 'dropped', willReconnect: true);
+    $fake->emitClosed('a', 'dropped', reconnect: true);
 
     expect($fake->isOpen('a'))->toBeTrue();
 
@@ -250,7 +246,7 @@ it('asserts on opens and closes', function () {
 
     $fake->assertNothingOpened()->assertNotOpened('a')->assertNotClosed('a');
 
-    Stream::open('a', 'https://api.test/s', [], ['q' => 1]);
+    Stream::open('a', 'https://api.test/s', [], '{"q":1}');
     Stream::close('a');
 
     $fake->assertOpened('a')

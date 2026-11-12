@@ -21,27 +21,31 @@ use Native\Mobile\Edge\Asgard\ServerRegion;
  * A server action (a tap inside a fragment, protocol §10.2) goes to the same
  * endpoint with an `action` member and is answered the same way.
  *
- * With streaming on, every region that asks is also subscribed to the
- * server's push stream (RegionStreams), so the server can send it a new
- * fragment without being asked.
+ * Every call is signed and encrypted (protocol §7) by AsgardClient, which
+ * also handshakes when there is no session. A fragment whose response does
+ * not verify never reaches the region.
+ *
+ * With streaming on, every region that got a fragment is also subscribed to
+ * the server's push stream (RegionStreams), so the server can send it a new
+ * fragment without being asked. Subscribing after a good answer means the
+ * session the stream is signed with already exists.
  *
  * Any failure leaves the region as it was: on its placeholder, or on the
  * last fragment it painted. Failures are logged, never thrown.
  */
 class HttpFragmentSource implements FragmentSource
 {
+    /**
+     * @param  array{url: string, path: string, key: string, timeout: float, store: ?string}  $config
+     */
     public function __construct(
-        protected string $url,
-        protected string $path = '_asgard',
-        protected float $timeout = 10,
+        protected array $config,
         protected ?RegionStreams $streams = null,
     ) {}
 
     public function request(RegionRequest $request): void
     {
         $this->send($request);
-
-        $this->streams?->subscribe($request);
     }
 
     public function action(ActionRequest $request): void
@@ -51,18 +55,20 @@ class HttpFragmentSource implements FragmentSource
 
     protected function send(RegionRequest $request): void
     {
+        $config = $this->config;
         $endpoint = $this->endpoint('render');
         // The wire body (protocol §9) leaves the protocol version to the transport.
         $body = ['protocol' => 1, ...$request->toArray()];
-        $timeout = $this->timeout;
+        $streams = $request instanceof ActionRequest ? null : $this->streams;
         $what = $request instanceof ActionRequest
             ? "action [{$request->call}] in region [{$request->region}]"
             : "region [{$request->region}]";
 
-        AsyncTask::dispatch(static fn () => RenderCall::send($endpoint, $body, $timeout))
-            ->finished(function ($result) use ($request, $endpoint, $what) {
+        AsyncTask::dispatch(static fn () => RenderCall::send($config, $body))
+            ->finished(function ($result) use ($request, $endpoint, $what, $streams) {
                 if (is_array($result) && ($result['ok'] ?? false)) {
                     ServerRegion::deliver($request, $result['fragment']);
+                    $streams?->subscribe($request);
 
                     return;
                 }
@@ -80,6 +86,6 @@ class HttpFragmentSource implements FragmentSource
 
     protected function endpoint(string $name): string
     {
-        return rtrim($this->url, '/').'/'.trim($this->path, '/').'/'.$name;
+        return rtrim($this->config['url'], '/').'/'.trim($this->config['path'], '/').'/'.$name;
     }
 }

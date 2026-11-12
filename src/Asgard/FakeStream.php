@@ -85,13 +85,13 @@ class FakeStream
         return $this;
     }
 
-    public function emitClosed(string $id, ?string $error = null, bool $willReconnect = false): static
+    public function emitClosed(string $id, ?string $error = null, bool $reconnect = false, ?int $status = null): static
     {
-        if (! $willReconnect) {
+        if (! $reconnect) {
             unset($this->live[$id]);
         }
 
-        Event::dispatch(new StreamClosed($id, $error, $willReconnect));
+        Event::dispatch(new StreamClosed($id, $error, $reconnect, $status));
 
         return $this;
     }

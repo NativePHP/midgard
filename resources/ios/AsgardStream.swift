@@ -37,10 +37,13 @@ final class AsgardStreamManager {
     }
 
     /// Open a stream. An id that is already open is replaced, and the old
-    /// connection stops without a StreamClosed.
+    /// connection stops without a StreamClosed. Opening an id that is
+    /// waiting to be reopened (it fired StreamClosed with reconnect) carries
+    /// its Last-Event-ID and backoff over to the new connection.
     func open(id: String, url: URL, method: String, headers: [String: String], body: Data?) {
         queue.async {
-            self.sessions[id]?.stop()
+            let previous = self.sessions[id]
+            previous?.stop()
 
             let session = AsgardStreamSession(
                 manager: self,
@@ -50,6 +53,9 @@ final class AsgardStreamManager {
                 headers: headers,
                 body: body
             )
+            if let previous = previous, previous.awaitingReopen {
+                session.resume(from: previous)
+            }
             self.sessions[id] = session
             session.start()
         }
@@ -61,7 +67,7 @@ final class AsgardStreamManager {
         queue.async {
             guard let session = self.sessions.removeValue(forKey: id) else { return }
             session.stop()
-            self.emit(AsgardStreamEvents.closed, ["id": id, "error": nil, "willReconnect": false])
+            self.emit(AsgardStreamEvents.closed, ["id": id, "error": nil, "reconnect": false, "status": nil])
         }
     }
 
@@ -73,8 +79,12 @@ final class AsgardStreamManager {
     }
 }
 
-/// One stream: a connection plus the reconnect loop around it.
-/// Only touched on the manager's queue.
+/// One stream connection. Only touched on the manager's queue.
+///
+/// It never reconnects by itself. The request it was given is signed, and
+/// the signature expires, so replaying it later would be refused. After a
+/// drop it waits out the backoff, then fires StreamClosed with reconnect and
+/// waits for PHP to open the id again with fresh headers.
 final class AsgardStreamSession: NSObject, URLSessionDataDelegate {
     let id: String
 
@@ -93,6 +103,10 @@ final class AsgardStreamSession: NSObject, URLSessionDataDelegate {
     private var connected = false
     private var fatalReason: String?
     private var httpFailure: String?
+    private var httpStatus: Int?
+
+    /// True once this connection has dropped, waited, and asked PHP to reopen it.
+    private(set) var awaitingReopen = false
 
     init(manager: AsgardStreamManager, id: String, url: URL, method: String, headers: [String: String], body: Data?) {
         self.manager = manager
@@ -106,6 +120,13 @@ final class AsgardStreamSession: NSObject, URLSessionDataDelegate {
 
     func start() {
         connect()
+    }
+
+    /// Carry the Last-Event-ID and backoff over from the connection this one replaces.
+    func resume(from previous: AsgardStreamSession) {
+        lastEventId = previous.lastEventId
+        retryMs = previous.retryMs
+        failures = previous.failures
     }
 
     func stop() {
@@ -146,6 +167,7 @@ final class AsgardStreamSession: NSObject, URLSessionDataDelegate {
         connected = false
         fatalReason = nil
         httpFailure = nil
+        httpStatus = nil
 
         session.dataTask(with: request).resume()
     }
@@ -164,6 +186,7 @@ final class AsgardStreamSession: NSObject, URLSessionDataDelegate {
         }
 
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        httpStatus = status
 
         switch AsgardSseStatus.classify(status) {
         case .accept:
@@ -208,20 +231,21 @@ final class AsgardStreamSession: NSObject, URLSessionDataDelegate {
 
         if let fatal = fatalReason {
             stopped = true
-            manager.emit(AsgardStreamEvents.closed, ["id": id, "error": fatal, "willReconnect": false])
+            manager.emit(AsgardStreamEvents.closed, ["id": id, "error": fatal, "reconnect": false, "status": httpStatus])
             manager.finished(self)
             return
         }
 
         let reason: String? = httpFailure ?? error?.localizedDescription
+        let status: Int? = httpFailure == nil ? nil : httpStatus
 
         failures += 1
         let delay = AsgardSseBackoff.delayMs(retryMs: retryMs, failures: failures)
 
-        manager.emit(AsgardStreamEvents.closed, ["id": id, "error": reason, "willReconnect": true])
-
         manager.queue.asyncAfter(deadline: .now() + .milliseconds(delay)) { [weak self] in
-            self?.connect()
+            guard let self = self, !self.stopped else { return }
+            self.awaitingReopen = true
+            self.manager.emit(AsgardStreamEvents.closed, ["id": self.id, "error": reason, "reconnect": true, "status": status])
         }
     }
 }
@@ -257,7 +281,14 @@ enum AsgardStreamFunctions {
                 }
             }
 
-            let body = (parameters["body"] as? String)?.data(using: .utf8)
+            // The body crosses the bridge in base64, because it is ciphertext.
+            var body: Data?
+            if let encoded = parameters["body"] as? String {
+                guard let decoded = Data(base64Encoded: encoded) else {
+                    return BridgeResponse.error(code: "INVALID_PARAMETERS", message: "body must be base64")
+                }
+                body = decoded
+            }
 
             AsgardStreamManager.shared.open(id: id, url: url, method: method, headers: headers, body: body)
 

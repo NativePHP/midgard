@@ -2,6 +2,7 @@ package com.nativephp.plugins.asgard
 
 import android.os.Handler
 import android.os.Looper
+import android.util.Base64
 import android.util.Log
 import androidx.fragment.app.FragmentActivity
 import com.nativephp.mobile.bridge.BridgeFunction
@@ -62,11 +63,17 @@ object AsgardStreamManager {
 
     /**
      * Open a stream. An id that is already open is replaced, and the old
-     * connection stops without a StreamClosed.
+     * connection stops without a StreamClosed. Opening an id that is waiting
+     * to be reopened (it fired StreamClosed with reconnect) carries its
+     * Last-Event-ID and backoff over to the new connection.
      */
-    fun open(id: String, url: String, method: String, headers: Map<String, String>, body: String?) {
+    fun open(id: String, url: String, method: String, headers: Map<String, String>, body: ByteArray?) {
         val session = AsgardStreamSession(id, url, method, headers, body)
-        sessions.put(id, session)?.stop()
+        val previous = sessions.put(id, session)
+        previous?.stop()
+        if (previous != null && previous.awaitingReopen) {
+            session.resume(previous)
+        }
         session.start()
     }
 
@@ -79,7 +86,7 @@ object AsgardStreamManager {
         session.stop()
         emit(
             AsgardStreamEvents.CLOSED,
-            payload("id" to id, "error" to null, "willReconnect" to false)
+            payload("id" to id, "error" to null, "reconnect" to false, "status" to null)
         )
     }
 
@@ -89,13 +96,20 @@ object AsgardStreamManager {
     }
 }
 
-/** One stream: a connection plus the reconnect loop around it, on its own thread. */
+/**
+ * One stream connection, on its own thread.
+ *
+ * It never reconnects by itself. The request it was given is signed, and the
+ * signature expires, so replaying it later would be refused. After a drop it
+ * waits out the backoff, then fires StreamClosed with reconnect and waits for
+ * PHP to open the id again with fresh headers.
+ */
 class AsgardStreamSession(
     val id: String,
     private val url: String,
     private val method: String,
     private val headers: Map<String, String>,
-    private val body: String?,
+    private val body: ByteArray?,
 ) {
     @Volatile
     private var stopped = false
@@ -105,10 +119,27 @@ class AsgardStreamSession(
 
     private var thread: Thread? = null
 
-    // Only touched by the worker thread.
+    // Written by the worker thread. Read by resume() once the worker is done.
+    @Volatile
     private var lastEventId: String? = null
+
+    @Volatile
     private var retryMs = AsgardSseBackoff.DEFAULT_RETRY_MS
+
+    @Volatile
     private var failures = 0
+
+    /** True once this connection has dropped, waited, and asked PHP to reopen it. */
+    @Volatile
+    var awaitingReopen = false
+        private set
+
+    /** Carry the Last-Event-ID and backoff over from the connection this one replaces. */
+    fun resume(previous: AsgardStreamSession) {
+        lastEventId = previous.lastEventId
+        retryMs = previous.retryMs
+        failures = previous.failures
+    }
 
     fun start() {
         thread = Thread({ loop() }, "asgard-sse-$id").also {
@@ -129,84 +160,91 @@ class AsgardStreamSession(
     }
 
     private fun loop() {
-        while (!stopped) {
-            var reason: String? = null
-            var fatal = false
+        if (stopped) return
 
-            try {
-                val conn = URL(url).openConnection() as HttpURLConnection
-                connection = conn
+        var reason: String? = null
+        var fatal = false
+        var status: Int? = null
 
-                conn.requestMethod = method
-                conn.connectTimeout = 30_000
-                // Idle timeout: a stream that goes silent this long is treated as dropped.
-                conn.readTimeout = 300_000
-                conn.useCaches = false
-                conn.instanceFollowRedirects = true
-                conn.setRequestProperty("Accept", "text/event-stream")
-                conn.setRequestProperty("Cache-Control", "no-cache")
-                // Asking for identity turns off transparent gzip, which would hold events back.
-                conn.setRequestProperty("Accept-Encoding", "identity")
-                for ((name, value) in headers) {
-                    conn.setRequestProperty(name, value)
-                }
-                lastEventId?.let { conn.setRequestProperty("Last-Event-ID", it) }
+        try {
+            val conn = URL(url).openConnection() as HttpURLConnection
+            connection = conn
 
-                if (method == "POST" && body != null) {
-                    val bytes = body.toByteArray(Charsets.UTF_8)
-                    conn.doOutput = true
-                    conn.setFixedLengthStreamingMode(bytes.size)
-                    conn.outputStream.use { it.write(bytes) }
-                }
+            conn.requestMethod = method
+            conn.connectTimeout = 30_000
+            // Idle timeout: a stream that goes silent this long is treated as dropped.
+            conn.readTimeout = 300_000
+            conn.useCaches = false
+            conn.instanceFollowRedirects = true
+            conn.setRequestProperty("Accept", "text/event-stream")
+            conn.setRequestProperty("Cache-Control", "no-cache")
+            // Asking for identity turns off transparent gzip, which would hold events back.
+            conn.setRequestProperty("Accept-Encoding", "identity")
+            for ((name, value) in headers) {
+                conn.setRequestProperty(name, value)
+            }
+            lastEventId?.let { conn.setRequestProperty("Last-Event-ID", it) }
 
-                val status = conn.responseCode
-
-                when (AsgardSseStatus.classify(status)) {
-                    AsgardSseStatus.Action.ACCEPT -> {
-                        failures = 0
-                        emit(AsgardStreamEvents.OPENED, AsgardStreamManager.payload("id" to id))
-                        readStream(conn)
-                    }
-                    AsgardSseStatus.Action.STOP -> {
-                        fatal = true
-                        reason = "HTTP $status"
-                    }
-                    AsgardSseStatus.Action.RETRY -> reason = "HTTP $status"
-                }
-            } catch (e: Exception) {
-                if (stopped) return
-                reason = e.message ?: e.javaClass.simpleName
-            } finally {
-                connection?.disconnect()
-                connection = null
+            if (method == "POST" && body != null) {
+                conn.doOutput = true
+                conn.setFixedLengthStreamingMode(body.size)
+                conn.outputStream.use { it.write(body) }
             }
 
+            val code = conn.responseCode
+            status = code
+
+            when (AsgardSseStatus.classify(code)) {
+                AsgardSseStatus.Action.ACCEPT -> {
+                    failures = 0
+                    emit(AsgardStreamEvents.OPENED, AsgardStreamManager.payload("id" to id))
+                    readStream(conn)
+                }
+                AsgardSseStatus.Action.STOP -> {
+                    fatal = true
+                    reason = "HTTP $code"
+                }
+                AsgardSseStatus.Action.RETRY -> reason = "HTTP $code"
+            }
+        } catch (e: Exception) {
             if (stopped) return
-
-            if (fatal) {
-                stopped = true
-                AsgardStreamManager.emit(
-                    AsgardStreamEvents.CLOSED,
-                    AsgardStreamManager.payload("id" to id, "error" to reason, "willReconnect" to false)
-                )
-                AsgardStreamManager.finished(this)
-                return
-            }
-
-            failures++
-            val delay = AsgardSseBackoff.delayMs(retryMs, failures)
-
-            emit(
-                AsgardStreamEvents.CLOSED,
-                AsgardStreamManager.payload("id" to id, "error" to reason, "willReconnect" to true)
-            )
-
-            try {
-                Thread.sleep(delay)
-            } catch (e: InterruptedException) {
-                return
-            }
+            reason = e.message ?: e.javaClass.simpleName
+        } finally {
+            connection?.disconnect()
+            connection = null
         }
+
+        if (stopped) return
+
+        if (fatal) {
+            stopped = true
+            AsgardStreamManager.emit(
+                AsgardStreamEvents.CLOSED,
+                AsgardStreamManager.payload("id" to id, "error" to reason, "reconnect" to false, "status" to status)
+            )
+            AsgardStreamManager.finished(this)
+            return
+        }
+
+        // A 2xx stream that ended or dropped is not an HTTP failure.
+        if (status != null && status in 200..299) status = null
+
+        failures++
+        val delay = AsgardSseBackoff.delayMs(retryMs, failures)
+
+        try {
+            Thread.sleep(delay)
+        } catch (e: InterruptedException) {
+            return
+        }
+
+        if (stopped) return
+
+        awaitingReopen = true
+        emit(
+            AsgardStreamEvents.CLOSED,
+            AsgardStreamManager.payload("id" to id, "error" to reason, "reconnect" to true, "status" to status)
+        )
     }
 
     private fun readStream(conn: HttpURLConnection) {
@@ -268,7 +306,12 @@ object AsgardStreamFunctions {
                 }
             }
 
-            val body = parameters["body"] as? String
+            // The body crosses the bridge in base64, because it is ciphertext.
+            val body = try {
+                (parameters["body"] as? String)?.let { Base64.decode(it, Base64.DEFAULT) }
+            } catch (e: IllegalArgumentException) {
+                return BridgeResponse.error("INVALID_PARAMETERS", "body must be base64")
+            }
 
             return try {
                 AsgardStreamManager.open(id, url, method, headers, body)
