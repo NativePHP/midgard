@@ -1,0 +1,97 @@
+<?php
+
+use Native\Api\Client\Asgard\Security\Base64Url;
+use Native\Api\Client\Asgard\Security\Ecdh;
+use Native\Api\Client\Asgard\Security\SessionKeys;
+use Native\Api\Client\Asgard\Security\StructuredFields;
+use Native\Api\Client\Asgard\Security\Wire;
+
+// tests/Fixtures/asgard-interop.json is shared with nativephp/asgard, which
+// runs this same test against its own copy of the classes. If either side
+// drifts, its suite fails here.
+
+beforeEach(function () {
+    $this->v = json_decode(file_get_contents(__DIR__.'/Fixtures/asgard-interop.json'), true, 512, JSON_THROW_ON_ERROR);
+    $this->b = fn (string $text) => Base64Url::decode($text);
+    $h = $this->v['handshake'];
+    $this->keys = SessionKeys::fromSecret(Base64Url::decode($h['secret']));
+    $this->session = $h['session'];
+});
+
+it('agrees the same secret and keys from both sides of the handshake', function () {
+    $h = $this->v['handshake'];
+    $client = Ecdh::privateKey(($this->b)($h['client_private']));
+    $server = Ecdh::privateKey(($this->b)($h['server_private']));
+
+    expect(Base64Url::encode(Ecdh::publicPoint($client)))->toBe($h['client_public'])
+        ->and(Base64Url::encode(Ecdh::publicPoint($server)))->toBe($h['server_public'])
+        ->and(Base64Url::encode(Ecdh::agree($client, ($this->b)($h['server_public']))))->toBe($h['shared_secret'])
+        ->and(Base64Url::encode(Ecdh::agree($server, ($this->b)($h['client_public']))))->toBe($h['shared_secret']);
+
+    $secret = SessionKeys::secret(($this->b)($h['shared_secret']), ($this->b)($h['client_public']), ($this->b)($h['server_public']));
+    $keys = SessionKeys::fromSecret($secret);
+
+    expect(Base64Url::encode($secret))->toBe($h['secret'])
+        ->and(Base64Url::encode($keys->sigClient))->toBe($h['keys']['sig_c'])
+        ->and(Base64Url::encode($keys->sigServer))->toBe($h['keys']['sig_s'])
+        ->and(Base64Url::encode($keys->encClient))->toBe($h['keys']['enc_c'])
+        ->and(Base64Url::encode($keys->encServer))->toBe($h['keys']['enc_s']);
+});
+
+it('seals the request byte for byte and opens it', function () {
+    $r = $this->v['request'];
+    $sealed = Wire::sealRequest($this->keys, $this->session, $r['method'], $r['authority'], $r['path'], $r['plaintext'], $r['headers'], $r['created'], $r['nonce'], ($this->b)($r['salt']));
+
+    expect($sealed['headers'])->toBe($r['expected']['headers'])
+        ->and(Base64Url::encode($sealed['body']))->toBe($r['expected']['body'])
+        ->and(Base64Url::encode($sealed['signature']))->toBe($r['expected']['signature']);
+
+    $input = StructuredFields::parseDictionary($r['expected']['headers']['signature-input'])['asgard'];
+    $derived = ['@method' => $r['method'], '@authority' => $r['authority'], '@path' => $r['path']];
+    [, $base] = Wire::signatureBase($input['value'], $input['params'], fn ($name) => $derived[$name] ?? $r['expected']['headers'][$name]);
+
+    expect($base)->toBe($r['expected']['signature_base'])
+        ->and(Base64Url::encode(hash_hmac('sha256', $base, $this->keys->sigClient, true)))->toBe($r['expected']['signature']);
+
+    $opened = Wire::openRequest($this->keys, $this->session, $r['method'], $r['authority'], $r['path'], $r['expected']['headers'], ($this->b)($r['expected']['body']), $r['created']);
+
+    expect($opened['body'])->toBe($r['plaintext'])
+        ->and($opened['nonce'])->toBe($r['nonce'])
+        ->and(Base64Url::encode($opened['signature']))->toBe($r['expected']['signature']);
+});
+
+it('seals the response byte for byte and opens it against the request', function () {
+    $r = $this->v['response'];
+    $requestSignature = ($this->b)($this->v['request']['expected']['signature']);
+    $sealed = Wire::sealResponse($this->keys, $this->session, $r['status'], $r['plaintext'], $requestSignature, $r['created'], ($this->b)($r['salt']));
+
+    expect($sealed['headers'])->toBe($r['expected']['headers'])
+        ->and(Base64Url::encode($sealed['body']))->toBe($r['expected']['body']);
+
+    $input = StructuredFields::parseDictionary($r['expected']['headers']['signature-input'])['asgard'];
+    [, $base] = Wire::signatureBase($input['value'], $input['params'], fn ($name) => match ($name) {
+        '@status' => (string) $r['status'],
+        'signature' => ':'.base64_encode($requestSignature).':',
+        default => $r['expected']['headers'][$name],
+    });
+
+    expect($base)->toBe($r['expected']['signature_base'])
+        ->and(Wire::openResponse($this->keys, $this->session, $r['status'], $r['expected']['headers'], ($this->b)($r['expected']['body']), $requestSignature, $r['created']))
+        ->toBe($r['plaintext']);
+});
+
+it('seals the stream request and its event byte for byte and opens the event', function () {
+    $s = $this->v['stream_request'];
+    $sealed = Wire::sealRequest($this->keys, $this->session, $s['method'], $s['authority'], $s['path'], $s['plaintext'], $s['headers'], $s['created'], $s['nonce'], ($this->b)($s['salt']));
+
+    expect($sealed['headers'])->toBe($s['expected']['headers'])
+        ->and(Base64Url::encode($sealed['body']))->toBe($s['expected']['body'])
+        ->and(Base64Url::encode($sealed['signature']))->toBe($s['expected']['signature']);
+
+    $e = $this->v['stream_event'];
+    $data = Wire::sealEvent($this->keys, $this->session, $sealed['signature'], $e['id'], $e['event'], $e['plaintext'], ($this->b)($e['salt']));
+
+    expect($data)->toBe($e['expected']['data'])
+        ->and(Wire::eventBase($sealed['signature'], $e['id'], $e['event'], json_decode($data, true)['body']))->toBe($e['expected']['signature_base'])
+        ->and(Wire::openEvent($this->keys, $this->session, $sealed['signature'], $e['id'], $e['event'], $e['expected']['data']))->toBe($e['plaintext']);
+});

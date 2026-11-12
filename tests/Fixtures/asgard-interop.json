@@ -1,0 +1,101 @@
+{
+    "description": "Asgard protocol 1 interop vectors. Binary values are base64url. Generated once from fixed inputs; both nativephp/asgard and nativephp/midgard must reproduce every output. Do not regenerate to make a failing test pass.",
+    "handshake": {
+        "client_private": "p9xBpAzh2PyBRDIRxC0SLtOxf9NI1apGyN-wKk7ykpY",
+        "server_private": "-27gSNO1GDgIXq9bBCD8L2iDMWN9RlgK_wW4hF_fn8U",
+        "client_public": "BNUwUvXoKcJSMJhJin0Ip_vOn7HrWFzlDOXFCZe33po48iYfa1bin-_UfCfrNL8TmkltOi4GfpYrkztettd5uqQ",
+        "server_public": "BI81iYoDWyXpbEzI1WCKXj0wlfzJnDLyPQ8mvGb365QhIaJTSIeHiE2juYdbJQv2b0LYcT_Be4xR1D2cRhTu4Rw",
+        "shared_secret": "hXGXtzh8KW599-qTlezRObxyfQD9LLL7qR1RKgXmNaM",
+        "secret": "gPypM7CmEAfOT98qMugd5meG4EOLtdUStNSFgxoRQQU",
+        "keys": {
+            "sig_c": "gjbZtUMEZV6xXBPuyPA32Jcj27ef1pXO405dbwB4DKI",
+            "sig_s": "G8R-uO9geZMMqUPUTAx42lw978_BpEc4lIrBIWEur_o",
+            "enc_c": "DE5iX_qgYZCs598Y2D02wg",
+            "enc_s": "KPFuvXmHvcua9uOpGuDdEg"
+        },
+        "session": "aW50ZXJvcC1zZXNzaW9uLTAx"
+    },
+    "request": {
+        "method": "POST",
+        "authority": "heimdall-server.test",
+        "path": "/_asgard/render",
+        "headers": {
+            "x-asgard-method": "QUERY",
+            "authorization": "Bearer interop-token"
+        },
+        "plaintext": "{\"protocol\":1,\"component\":\"app.native.screens.home\",\"region\":\"stats\",\"state\":{\"name\":\"Simon\"},\"platform\":\"ios\",\"action\":{\"call\":\"shuffle\",\"args\":[3]}}",
+        "created": 1767225600,
+        "nonce": "aW50ZXJvcC1ub25jZS0wMQ",
+        "salt": "pD7RJiRu2RGmo9I3R6cvhA",
+        "expected": {
+            "headers": {
+                "content-type": "application/json",
+                "content-encoding": "aes128gcm",
+                "content-digest": "sha-256=:DwyVxVWK7YBtl68hkIQZa3/32UoXmqN07U209mAnvOQ=:",
+                "asgard-protocol": "1",
+                "asgard-session-id": "aW50ZXJvcC1zZXNzaW9uLTAx",
+                "x-asgard-method": "QUERY",
+                "authorization": "Bearer interop-token",
+                "signature-input": "asgard=(\"@method\" \"@authority\" \"@path\" \"content-type\" \"content-encoding\" \"content-digest\" \"asgard-protocol\" \"asgard-session-id\" \"x-asgard-method\" \"authorization\");created=1767225600;expires=1767225900;keyid=\"aW50ZXJvcC1zZXNzaW9uLTAx\";alg=\"hmac-sha256\";tag=\"asgard/1\";nonce=\"aW50ZXJvcC1ub25jZS0wMQ\"",
+                "signature": "asgard=:QYEpe5VDsU+7U53l9JRunxL9sm+lYG1f+yi8fUfyTHU=:"
+            },
+            "body": "pD7RJiRu2RGmo9I3R6cvhAAAEAAYYVc1MFpYSnZjQzF6WlhOemFXOXVMVEF4-Dradh379RxY91f49iRIkFNfylAzzNgyA1zoK4bYZzkHORWmJ2l2ekNQuV1gIo-APFOago2NnOTd3yCRN9xBNnxdMUN4rgQi2sIWhahICsXuTPxIBvET1CQgunwBmAs7rdICnbz3xSoVudWWNqbrpryv1DC7c-JTs9v9cZ3XUTihN66tKRNIIKoS03joEbhrZwdZ71Yp_iQbLErK1aFQtxv5xWi6A2A",
+            "signature_base": "\"@method\": POST\n\"@authority\": heimdall-server.test\n\"@path\": /_asgard/render\n\"content-type\": application/json\n\"content-encoding\": aes128gcm\n\"content-digest\": sha-256=:DwyVxVWK7YBtl68hkIQZa3/32UoXmqN07U209mAnvOQ=:\n\"asgard-protocol\": 1\n\"asgard-session-id\": aW50ZXJvcC1zZXNzaW9uLTAx\n\"x-asgard-method\": QUERY\n\"authorization\": Bearer interop-token\n\"@signature-params\": (\"@method\" \"@authority\" \"@path\" \"content-type\" \"content-encoding\" \"content-digest\" \"asgard-protocol\" \"asgard-session-id\" \"x-asgard-method\" \"authorization\");created=1767225600;expires=1767225900;keyid=\"aW50ZXJvcC1zZXNzaW9uLTAx\";alg=\"hmac-sha256\";tag=\"asgard/1\";nonce=\"aW50ZXJvcC1ub25jZS0wMQ\"",
+            "signature": "QYEpe5VDsU-7U53l9JRunxL9sm-lYG1f-yi8fUfyTHU"
+        }
+    },
+    "response": {
+        "status": 200,
+        "plaintext": "{\"protocol\":1,\"region\":\"stats\",\"fragment\":{\"type\":\"text\",\"props\":{\"text\":\"Shuffled 3\"}}}",
+        "created": 1767225601,
+        "salt": "Gl72GyjE-0QRF0vNGdN4hw",
+        "expected": {
+            "headers": {
+                "content-type": "application/json",
+                "content-encoding": "aes128gcm",
+                "content-digest": "sha-256=:7lT5Is8dR17qsvVpirSTXQFFYBNAs8rUt5OK/L6nhgI=:",
+                "asgard-protocol": "1",
+                "signature-input": "asgard=(\"@status\" \"content-type\" \"content-encoding\" \"content-digest\" \"asgard-protocol\" \"signature\";req;key=\"asgard\");created=1767225601;keyid=\"aW50ZXJvcC1zZXNzaW9uLTAx\";alg=\"hmac-sha256\";tag=\"asgard/1\"",
+                "signature": "asgard=:uuJ2H3jofY86F/pMza4WhW/6SR3LPIlfs6IapvJGX7w=:"
+            },
+            "body": "Gl72GyjE-0QRF0vNGdN4hwAAEAAYYVc1MFpYSnZjQzF6WlhOemFXOXVMVEF4JRbcwugQXaCRG6yBIa66mGEkv7spUveV2Nsz1V5UVQy-7W6lj4fEZzuho9_9-78YbzM9lwfPC9cmyT8TQ6R426hsJuqBXEy75qyj7IXIQYw3BV5aSa0UGJMas6j6Pz9F0YfTUWXjGWnw",
+            "signature_base": "\"@status\": 200\n\"content-type\": application/json\n\"content-encoding\": aes128gcm\n\"content-digest\": sha-256=:7lT5Is8dR17qsvVpirSTXQFFYBNAs8rUt5OK/L6nhgI=:\n\"asgard-protocol\": 1\n\"signature\";req;key=\"asgard\": :QYEpe5VDsU+7U53l9JRunxL9sm+lYG1f+yi8fUfyTHU=:\n\"@signature-params\": (\"@status\" \"content-type\" \"content-encoding\" \"content-digest\" \"asgard-protocol\" \"signature\";req;key=\"asgard\");created=1767225601;keyid=\"aW50ZXJvcC1zZXNzaW9uLTAx\";alg=\"hmac-sha256\";tag=\"asgard/1\""
+        }
+    },
+    "stream_request": {
+        "method": "POST",
+        "authority": "heimdall-server.test",
+        "path": "/_asgard/stream",
+        "headers": {
+            "x-asgard-method": "QUERY"
+        },
+        "plaintext": "{\"protocol\":1,\"component\":\"app.native.screens.home\",\"regions\":[\"greeting\",\"stats\"],\"state\":[],\"platform\":\"android\"}",
+        "created": 1767225602,
+        "nonce": null,
+        "salt": "_OA3b2PHBmOWEw8CMJdOAg",
+        "expected": {
+            "headers": {
+                "content-type": "application/json",
+                "content-encoding": "aes128gcm",
+                "content-digest": "sha-256=:AaEZBICf+CK9AJr6JCL+ABXAt8tI7K0fc5k/WTrxFxc=:",
+                "asgard-protocol": "1",
+                "asgard-session-id": "aW50ZXJvcC1zZXNzaW9uLTAx",
+                "x-asgard-method": "QUERY",
+                "signature-input": "asgard=(\"@method\" \"@authority\" \"@path\" \"content-type\" \"content-encoding\" \"content-digest\" \"asgard-protocol\" \"asgard-session-id\" \"x-asgard-method\");created=1767225602;expires=1767225902;keyid=\"aW50ZXJvcC1zZXNzaW9uLTAx\";alg=\"hmac-sha256\";tag=\"asgard/1\"",
+                "signature": "asgard=:5cGFUuzny131NahKbNqfXFyvSr0WJkvqq4TVk1ZfQho=:"
+            },
+            "body": "_OA3b2PHBmOWEw8CMJdOAgAAEAAYYVc1MFpYSnZjQzF6WlhOemFXOXVMVEF4JjEZBcJQO3_w4spVowPvotChEuEY3N3kDSAYaTyHGHiTsdCDGTECo_X_y3Ipdw1jkOtcjASypBltVg6Kjl-omm30b-bKHqikryIgC-crcrsTczh6mWK6BAe58V_SWj1QX9cE9EH7oxmxWNU-ptOR23a090jloOdXi3UW8ticA35gdNgr",
+            "signature": "5cGFUuzny131NahKbNqfXFyvSr0WJkvqq4TVk1ZfQho"
+        }
+    },
+    "stream_event": {
+        "id": "3",
+        "event": "fragment",
+        "plaintext": "{\"protocol\":1,\"region\":\"stats\",\"fragment\":{\"type\":\"text\",\"props\":{\"text\":\"Pushed\"}}}",
+        "salt": "P8MCnQPQIkvYIgj_SpiqfQ",
+        "expected": {
+            "data": "{\"body\":\"P8MCnQPQIkvYIgj_SpiqfQAAEAAYYVc1MFpYSnZjQzF6WlhOemFXOXVMVEF4sZPQ1iVuf3jTb6G7DwMsdryxreg0o7XvxO_-49rQBuXwy0TNzNzfZwBlpJyWbFDT6aakhiz9hNkQM56-NXcW4VxY49tu62to5wFx-mQEd8SdFvT9mJsLV857LUbMrbYVud18zuo\",\"sig\":\"KMcnVnf8gQoWcR-452NlnH1b6R739YtQDoZoS2wwW1Y\"}",
+            "signature_base": "asgard/1 event\n5cGFUuzny131NahKbNqfXFyvSr0WJkvqq4TVk1ZfQho=\n3\nfragment\nP8MCnQPQIkvYIgj_SpiqfQAAEAAYYVc1MFpYSnZjQzF6WlhOemFXOXVMVEF4sZPQ1iVuf3jTb6G7DwMsdryxreg0o7XvxO_-49rQBuXwy0TNzNzfZwBlpJyWbFDT6aakhiz9hNkQM56-NXcW4VxY49tu62to5wFx-mQEd8SdFvT9mJsLV857LUbMrbYVud18zuo"
+        }
+    }
+}
