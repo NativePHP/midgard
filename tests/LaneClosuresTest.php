@@ -3,6 +3,7 @@
 use Laravel\SerializableClosure\SerializableClosure;
 use Native\Api\Client\Asgard\AsgardServiceProvider;
 use Native\Api\Client\Asgard\HttpServerTransport;
+use Native\Api\Client\Asgard\HttpUploadTransport;
 
 // A serialized closure is found by the line it starts on. Work written
 // inline next to the closure that dispatches it shipped that outer closure
@@ -24,4 +25,12 @@ it('ships the #[Server] call to the lane, not the send() around it', function ()
     $code = serialize(new SerializableClosure($work));
 
     expect($code)->toContain('RenderCall::serverMethod($config, $body)')->not->toContain('->finished(');
+});
+
+it('ships the upload to the lane, not the upload() around it', function () {
+    $work = HttpUploadTransport::uploadWork(['url' => 'https://example.test'], ['method' => 'savePhoto'], '/tmp/a.jpg');
+
+    $code = serialize(new SerializableClosure($work));
+
+    expect($code)->toContain('RenderCall::upload($config, $header, $path)')->not->toContain('->finished(');
 });

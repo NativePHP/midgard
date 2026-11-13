@@ -12,12 +12,14 @@ use Native\Api\Client\Asgard\Events\StreamOpened;
 use Native\Mobile\AsyncTask;
 use Native\Mobile\Edge\Asgard\Contracts\FragmentSource;
 use Native\Mobile\Edge\Asgard\Contracts\ServerTransport;
+use Native\Mobile\Edge\Asgard\Contracts\UploadTransport;
 use Native\Mobile\Edge\Asgard\ServerRegion;
 use Native\Mobile\Edge\NativeRouter;
 use Native\Mobile\Events\Screen\ScreenMounted;
 
 /**
- * Binds the HTTP fragment source and the HTTP `#[Server]` transport when the
+ * Binds the HTTP fragment source, the HTTP `#[Server]` transport and the
+ * HTTP upload transport when the
  * app runs nativephp/mobile and has an Asgard server and key configured.
  * Otherwise it does nothing: mobile's own null source keeps every region on
  * its placeholder, and its null transport fails every `#[Server]` call.
@@ -79,6 +81,11 @@ class AsgardServiceProvider extends ServiceProvider
         if (interface_exists(ServerTransport::class)) {
             $this->app->singleton(ServerTransport::class, fn () => new HttpServerTransport($config));
         }
+
+        // So do uploads to #[Upload] methods, with their own timeout.
+        if (interface_exists(UploadTransport::class)) {
+            $this->app->singleton(UploadTransport::class, fn () => new HttpUploadTransport($config));
+        }
     }
 
     public function boot(): void
@@ -131,6 +138,7 @@ class AsgardServiceProvider extends ServiceProvider
             'path' => (string) config('midgard.asgard.path', '_asgard'),
             'key' => $key,
             'timeout' => (float) config('midgard.asgard.timeout', 20),
+            'upload_timeout' => (float) config('midgard.asgard.upload_timeout', 150),
             'store' => is_string($store) && $store !== '' ? $store : null,
         ];
     }

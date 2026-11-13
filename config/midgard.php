@@ -17,6 +17,12 @@ return [
         // same slow server would read as a network failure.
         'timeout' => (float) env('ASGARD_TIMEOUT', 20),
 
+        // Seconds one upload from uploadToServer() may take. A 20 MB file on
+        // a slow mobile network takes well over the timeout above. Keep it
+        // longer than the device's nativephp.asgard.upload_timeout (120 by
+        // default), for the same reason.
+        'upload_timeout' => (float) env('ASGARD_UPLOAD_TIMEOUT', 150),
+
         // The app's Asgard key: the same value as the server's ASGARD_KEY.
         // It is a public identifier, not a secret. Without it, regions keep
         // their placeholders.

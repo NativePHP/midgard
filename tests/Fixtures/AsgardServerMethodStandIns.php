@@ -3,6 +3,7 @@
 namespace Native\Mobile\Edge\Asgard\Contracts;
 
 use Native\Mobile\Edge\Asgard\ServerRequest;
+use Native\Mobile\Edge\Asgard\UploadRequest;
 
 // Stand-ins for the parts of nativephp/mobile that HttpServerTransport
 // talks to, which is not a dev dependency of this package. A real install
@@ -15,7 +16,36 @@ if (! interface_exists(ServerTransport::class)) {
     }
 }
 
+if (! interface_exists(UploadTransport::class)) {
+    interface UploadTransport
+    {
+        public function upload(UploadRequest $request): string;
+    }
+}
+
 namespace Native\Mobile\Edge\Asgard;
+
+if (! class_exists(UploadRequest::class)) {
+    final class UploadRequest
+    {
+        public function __construct(
+            public readonly string $component,
+            public readonly string $method,
+            public readonly array $args,
+            public readonly array $state,
+            public readonly string $platform,
+            public readonly string $path,
+            public readonly string $filename,
+            public readonly string $mime,
+            public readonly int $size,
+        ) {}
+
+        public function toArray(): array
+        {
+            return ['component' => $this->component, 'method' => $this->method, 'args' => $this->args, 'state' => $this->state, 'platform' => $this->platform, 'filename' => $this->filename, 'mime' => $this->mime, 'size' => $this->size];
+        }
+    }
+}
 
 if (! class_exists(ServerRequest::class)) {
     final class ServerRequest
@@ -73,6 +103,8 @@ if (! class_exists(AsyncTask::class)) {
 
         public bool $started = false;
 
+        public ?int $timeout = null;
+
         public ?\Closure $finished = null;
 
         public ?\Closure $failed = null;
@@ -82,6 +114,13 @@ if (! class_exists(AsyncTask::class)) {
         public function anyScreen(): static
         {
             $this->anyScreen = true;
+
+            return $this;
+        }
+
+        public function timeout(int $seconds): static
+        {
+            $this->timeout = $seconds;
 
             return $this;
         }

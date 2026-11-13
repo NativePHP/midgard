@@ -29,6 +29,9 @@ class FakeAsgardServer
 
     public int $handshakes = 0;
 
+    /** The per-request timeout option of each request, handshakes included. */
+    public array $timeouts = [];
+
     /** Answer every render with this status, unsigned, while set. */
     public ?int $refuseWith = null;
 
@@ -59,7 +62,11 @@ class FakeAsgardServer
 
     public function client(): Client
     {
-        return new Client(['handler' => HandlerStack::create(fn (RequestInterface $r) => new FulfilledPromise($this->handle($r))), 'http_errors' => false]);
+        return new Client(['handler' => HandlerStack::create(function (RequestInterface $r, array $options) {
+            $this->timeouts[] = $options['timeout'] ?? null;
+
+            return new FulfilledPromise($this->handle($r));
+        }), 'http_errors' => false]);
     }
 
     public function forgetSessions(): void
@@ -104,7 +111,14 @@ class FakeAsgardServer
         }
 
         $this->requests[array_key_last($this->requests)]['nonce'] = $opened['nonce'];
-        $this->requests[array_key_last($this->requests)]['body'] = json_decode($opened['body'], true);
+        if (str_ends_with($path, '/upload')) {
+            // A frame: header length, JSON header, the file.
+            $length = unpack('N', $opened['body'])[1];
+            $this->requests[array_key_last($this->requests)]['body'] = json_decode(substr($opened['body'], 4, $length), true);
+            $this->requests[array_key_last($this->requests)]['bytes'] = substr($opened['body'], 4 + $length);
+        } else {
+            $this->requests[array_key_last($this->requests)]['body'] = json_decode($opened['body'], true);
+        }
 
         if ($this->refuseWith !== null) {
             return new Response($this->refuseWith, ['Content-Type' => 'application/json'], '{"error":"refused"}');
@@ -112,7 +126,7 @@ class FakeAsgardServer
 
         $message = match (true) {
             str_ends_with($path, '/routes') => ['protocol' => 1, 'version' => $this->routesVersion, 'routes' => $this->routes],
-            str_ends_with($path, '/call') => ['protocol' => 1, 'delta' => (object) $this->delta],
+            str_ends_with($path, '/call'), str_ends_with($path, '/upload') => ['protocol' => 1, 'delta' => (object) $this->delta],
             default => ['protocol' => 1, 'region' => 'r', 'fragment' => $this->fragment] + ($this->chrome !== null ? ['chrome' => $this->chrome] : []),
         };
 

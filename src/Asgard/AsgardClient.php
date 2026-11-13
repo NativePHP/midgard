@@ -16,7 +16,7 @@ use Psr\Http\Message\ResponseInterface;
 /**
  * The device's half of Asgard sessions, signatures and encryption (§6, §7).
  *
- * render(), callMethod() and routes() do the network calls: each handshakes
+ * render(), callMethod(), upload() and routes() do the network calls: each handshakes
  * when there is no session, seals the request, and verifies and decrypts the
  * answer. A 419 gets one re-handshake and one retry. A 403 is never retried.
  * Anything that fails comes back as ['ok' => false], never as a fragment, a
@@ -38,6 +38,7 @@ class AsgardClient
         protected SessionCache $sessions,
         protected float $timeout = 20,
         protected ?ClientInterface $http = null,
+        protected float $uploadTimeout = 150,
     ) {}
 
     /**
@@ -54,6 +55,7 @@ class AsgardClient
             new SessionCache(Cache::store($config['store'] ?? null), SessionCache::keyFor($config['url'], $config['key'])),
             (float) ($config['timeout'] ?? 20),
             $http,
+            (float) ($config['upload_timeout'] ?? 150),
         );
     }
 
@@ -190,6 +192,60 @@ class AsgardClient
         }
 
         return ['ok' => true, 'status' => $result['status'], 'delta' => $delta, ...$more];
+    }
+
+    /**
+     * One upload to an `#[Upload]` method (protocol §10.6). Unsafe, so it
+     * carries a nonce. The body is a frame: a 4 byte big-endian header
+     * length, the JSON header, then the file's bytes. The answer is a
+     * call's.
+     *
+     * The whole file is read into memory and sealed in one piece, as §7.4
+     * encrypts a body whole. Streaming it is future work. A file whose size
+     * no longer matches the header (it changed after the device checked
+     * it) is refused here, before anything is sent.
+     *
+     * @param  array<string, mixed>  $header  The frame header, protocol and size included.
+     * @return array{ok: bool, status: int, delta?: array<string, mixed>, fragments?: array<string, array{fragment: mixed, version?: string, chrome?: array}>, refresh?: list<array{component: string, region?: string}>, error?: string}
+     */
+    public function upload(array $header, string $path): array
+    {
+        $bytes = is_file($path) && ! is_link($path) ? @file_get_contents($path) : false;
+
+        if ($bytes === false) {
+            return ['ok' => false, 'status' => 0, 'error' => 'The file could not be read.'];
+        }
+
+        if (strlen($bytes) !== ($header['size'] ?? null)) {
+            return ['ok' => false, 'status' => 0, 'error' => 'The file changed after it was checked.'];
+        }
+
+        $frame = self::frame($header, $bytes);
+        unset($bytes);
+
+        $result = $this->send('upload', $frame, true, $this->uploadTimeout);
+        unset($frame);
+
+        if (! $result['ok']) {
+            return $result;
+        }
+
+        $delta = $result['json']['delta'] ?? null;
+        $more = self::more($result['json']);
+
+        if (! is_array($delta) || ($delta !== [] && array_is_list($delta)) || $more === null) {
+            return ['ok' => false, 'status' => $result['status'], 'error' => 'bad response'];
+        }
+
+        return ['ok' => true, 'status' => $result['status'], 'delta' => $delta, ...$more];
+    }
+
+    /** The upload frame: header length, JSON header, bytes. */
+    public static function frame(array $header, string $bytes): string
+    {
+        $json = json_encode($header, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION | JSON_THROW_ON_ERROR);
+
+        return pack('N', strlen($json)).$json.$bytes;
     }
 
     /**
@@ -344,14 +400,22 @@ class AsgardClient
      */
     protected function call(string $endpoint, array $body, bool $action): array
     {
-        $plaintext = json_encode($body, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
+        return $this->send($endpoint, json_encode($body, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR), $action);
+    }
 
+    /**
+     * One sealed call with a plaintext body, with the 419 retry.
+     *
+     * @return array{ok: true, status: int, json: array<string, mixed>}|array{ok: false, status: int, error: string}
+     */
+    protected function send(string $endpoint, string $plaintext, bool $action, ?float $timeout = null): array
+    {
         try {
-            $result = $this->attempt($this->currentSession() ?? $this->handshake(), $endpoint, $plaintext, $action);
+            $result = $this->attempt($this->currentSession() ?? $this->handshake(), $endpoint, $plaintext, $action, $timeout);
 
             if ($result['status'] === 419) {
                 // The server lost the session. Exactly one fresh one, exactly one retry.
-                $result = $this->attempt($this->handshake(), $endpoint, $plaintext, $action);
+                $result = $this->attempt($this->handshake(), $endpoint, $plaintext, $action, $timeout);
             }
         } catch (AsgardException $e) {
             return ['ok' => false, 'status' => $e->getCode(), 'error' => $e->getMessage()];
@@ -371,7 +435,7 @@ class AsgardClient
     }
 
     /** @return array{ok: true, status: int, json: array<string, mixed>}|array{ok: false, status: int, error: string} */
-    protected function attempt(Session $session, string $name, string $plaintext, bool $action): array
+    protected function attempt(Session $session, string $name, string $plaintext, bool $action, ?float $timeout = null): array
     {
         $endpoint = $this->endpoint($name);
         $sealed = $this->seal($session, $endpoint, $plaintext, $action ? Base64Url::encode(random_bytes(16)) : null);
@@ -380,7 +444,7 @@ class AsgardClient
             $response = $this->http()->request('POST', $endpoint, [
                 'body' => $sealed['body'],
                 'headers' => $sealed['headers'] + ['accept' => 'application/json'],
-            ]);
+            ] + ($timeout === null ? [] : ['timeout' => $timeout]));
         } catch (GuzzleException $e) {
             return ['ok' => false, 'status' => 0, 'error' => $e->getMessage()];
         }
