@@ -115,10 +115,11 @@ class AsgardClient
     /**
      * One render or server action. Actions (a body with `action`) carry a nonce.
      * A server screen's answer also carries its chrome, which comes back as is
-     * for the device to check.
+     * for the device to check. The region's version token comes back too,
+     * when the server sent a well-formed one.
      *
      * @param  array<string, mixed>  $body  The wire body, protocol member included.
-     * @return array{ok: bool, status: int, fragment?: mixed, chrome?: array, error?: string}
+     * @return array{ok: bool, status: int, fragment?: mixed, chrome?: array, version?: string, error?: string}
      */
     public function render(array $body): array
     {
@@ -135,6 +136,12 @@ class AsgardClient
         }
 
         $answer = ['ok' => true, 'status' => $result['status'], 'fragment' => $json['fragment']];
+
+        // The region's version token (§8.1), handed back when it subscribes.
+        $version = $json['version'] ?? null;
+        if (is_string($version) && preg_match('/^[A-Za-z0-9_-]{1,64}$/D', $version)) {
+            $answer['version'] = $version;
+        }
 
         if (array_key_exists('chrome', $json)) {
             if (! is_array($json['chrome'])) {

@@ -29,10 +29,14 @@ use Native\Mobile\Edge\Asgard\ServerRegion;
  * also handshakes when there is no session. A fragment whose response does
  * not verify never reaches the region.
  *
- * With streaming on, every region that got a fragment is also subscribed to
- * the server's push stream (RegionStreams), so the server can send it a new
- * fragment without being asked. Subscribing after a good answer means the
- * session the stream is signed with already exists.
+ * Each answer carries the region's version token, which is handed over with
+ * the fragment. The device uses it to say what it already holds when it
+ * subscribes to the push stream.
+ *
+ * With streaming on, watch() hands the device's set of subscriptions to the
+ * push stream (RegionStreams). The device only watches regions that already
+ * got a good answer, so the session the stream is signed with exists. With
+ * streaming off it does nothing.
  *
  * Any failure leaves the region as it was: on its placeholder, or on the
  * last fragment it painted. Failures are logged, never thrown.
@@ -57,22 +61,25 @@ class HttpFragmentSource implements FragmentSource
         $this->send($request);
     }
 
+    public function watch(array $subscriptions, string $platform): void
+    {
+        $this->streams?->watch($subscriptions, $platform);
+    }
+
     protected function send(RegionRequest $request): void
     {
         $config = $this->config;
         $endpoint = $this->endpoint('render');
         // The wire body (protocol §9) leaves the protocol version to the transport.
         $body = ['protocol' => 1, ...$request->toArray()];
-        $streams = $request instanceof ActionRequest ? null : $this->streams;
         $what = $request instanceof ActionRequest
             ? "action [{$request->call}] in region [{$request->region}]"
             : "region [{$request->region}]";
 
         AsyncTask::dispatch(static fn () => RenderCall::send($config, $body))
-            ->finished(function ($result) use ($request, $endpoint, $what, $streams) {
+            ->finished(function ($result) use ($request, $endpoint, $what) {
                 if (is_array($result) && ($result['ok'] ?? false)) {
-                    ServerRegion::deliver($request, $result['fragment'], $result['chrome'] ?? null);
-                    $streams?->subscribe($request);
+                    ServerRegion::deliver($request, $result['fragment'], $result['chrome'] ?? null, $result['version'] ?? null);
 
                     return;
                 }

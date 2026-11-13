@@ -14,7 +14,7 @@ class RenderCall
     /**
      * @param  array{url: string, path: string, key: string, timeout: float, store: ?string}  $config
      * @param  array<string, mixed>  $body  The RegionRequest wire body.
-     * @return array{ok: bool, status: int, fragment?: mixed, chrome?: array, error?: string}
+     * @return array{ok: bool, status: int, fragment?: mixed, chrome?: array, version?: string, error?: string}
      */
     public static function send(array $config, array $body): array
     {

@@ -11,206 +11,260 @@ use Native\Api\Client\Asgard\Security\SecurityException;
 use Native\Api\Client\Asgard\Security\Wire;
 
 /**
- * Keeps one Server-Sent Events stream open per component, so the server can
- * push fragments to its regions.
+ * Keeps the device's one Server-Sent Events stream to the Asgard server
+ * (protocol §8.1).
  *
- * Each region that got a fragment is added to its component's stream. The
- * stream is (re)opened when a new region joins or the state the server
- * renders from changes, because the subscription carries both. The stream
+ * The device hands over the whole set of subscriptions it wants through
+ * watch(), each time the set changes: one per component instance on
+ * screen, with its regions, the state they were rendered for and the
+ * version it holds for each. An unchanged set does nothing. An empty set
+ * closes the stream. Anything else (re)opens it, signed afresh. The stream
  * itself lives in native code (Stream), so PHP never blocks on it.
  *
  * Every opening request is signed and encrypted here, with the current
- * session (protocol §8.1). Native code never reconnects on its own with the
- * old headers, whose signature would soon expire: it waits out its backoff
- * and fires StreamClosed with `reconnect`, and this class opens the stream
- * again with a fresh signature. A 419 gets one new handshake (off the UI
- * lane) and one more try. Anything else that stops the stream ends the
- * subscription until a region asks again.
+ * session. Native code never reconnects on its own with the old headers,
+ * whose signature would soon expire: it waits out its backoff and fires
+ * StreamClosed with `reconnect`, and this class opens the stream again with
+ * a fresh signature. A 419 gets one new handshake (off the UI lane) and one
+ * more try. Anything else that stops the stream drops the set until the
+ * device hands over a new one.
  *
- * Every pushed event must verify against the request that opened its stream
- * and decrypt before it reaches the pusher. One that fails is logged and
- * dropped. The pusher, ServerRegion::push() in an app, only paints regions a
- * live screen declared, so a server cannot use a push to paint elsewhere.
+ * Every event must verify against the request that opened the stream and
+ * decrypt, and must name a subscription and region this stream carries,
+ * before it reaches the device. One that fails is logged and dropped. A
+ * `signal` goes to the signaller and a shared region's `fragment` to the
+ * pusher (ServerRegion::signal() and ServerRegion::push() in an app), with
+ * the subscription's address and state. Those only touch instances that
+ * asked with that state, so a server cannot use the stream to paint
+ * elsewhere.
  */
 class RegionStreams
 {
-    public const PREFIX = 'asgard:';
+    /** The native stream's id. There is only ever one. */
+    public const ID = 'asgard';
 
     /**
-     * @var array<string, array{regions: list<string>, state: array, platform: string, session: ?Session, signature: ?string, retried: bool}>
+     * The set the stream carries, by subscription id.
+     *
+     * @var array<string, array{id: string, component: string, regions: list<string>, state: array, versions: array<string, string>}>
      */
     protected array $subscriptions = [];
 
+    protected string $platform = '';
+
+    protected ?Session $session = null;
+
+    protected ?string $signature = null;
+
+    protected bool $retried = false;
+
     /**
-     * @param  Closure(string $component, string $region, array $fragment, ?array $chrome): int  $pusher
+     * @param  Closure(string $component, array $state, string $region, array $fragment, ?array $chrome, string $version): int  $pusher
+     * @param  Closure(string $component, array $state, string $region, string $version): int  $signaller
      * @param  (Closure(Closure(bool): void): void)|null  $refresh  Gets a new session off the UI lane, then calls back.
      *                                                              Without one, the handshake runs inline (tests).
      */
     public function __construct(
         protected AsgardClient $client,
         protected Closure $pusher,
+        protected Closure $signaller,
         protected ?Closure $refresh = null,
     ) {}
 
     /**
-     * @param  object{component: string, region: string, state: array, platform: string}  $request
+     * Carry exactly this set of subscriptions.
+     *
+     * @param  list<array{id: string, component: string, regions: list<string>, state: array, versions?: array<string, string>}>  $subscriptions
      */
-    public function subscribe(object $request): void
+    public function watch(array $subscriptions, string $platform): void
     {
-        $current = $this->subscriptions[$request->component] ?? null;
-        $regions = $current['regions'] ?? [];
-
-        if (! in_array($request->region, $regions, true)) {
-            $regions[] = $request->region;
+        $next = [];
+        foreach ($subscriptions as $subscription) {
+            $next[$subscription['id']] = [
+                'id' => $subscription['id'],
+                'component' => $subscription['component'],
+                'regions' => array_values($subscription['regions']),
+                'state' => $subscription['state'],
+                'versions' => $subscription['versions'] ?? [],
+            ];
         }
 
-        $next = ['regions' => $regions, 'state' => $request->state, 'platform' => $request->platform];
-
-        if ($current !== null && array_intersect_key($current, $next) === $next) {
+        // Versions alone do not make a set different. The stream keeps its own.
+        if ($platform === $this->platform && self::shape($next) === self::shape($this->subscriptions)) {
             return;
         }
 
-        $this->subscriptions[$request->component] = $next + ['session' => null, 'signature' => null, 'retried' => false];
+        $this->subscriptions = $next;
+        $this->platform = $platform;
+        $this->retried = false;
 
-        $this->open($request->component);
+        if ($next === []) {
+            $this->forget();
+            Stream::close(self::ID);
+
+            return;
+        }
+
+        $this->open();
     }
 
     public function receive(StreamMessage $message): void
     {
-        $component = $this->component($message->id);
-        $subscription = $component === null ? null : ($this->subscriptions[$component] ?? null);
-
-        if ($subscription === null || $subscription['session'] === null || $message->event !== 'fragment') {
+        if ($message->id !== self::ID || $this->session === null
+            || ! in_array($message->event, ['signal', 'fragment'], true)) {
             return;
         }
 
-        $session = $subscription['session'];
-
         try {
             $plaintext = Wire::openEvent(
-                $session->keys, $session->id, $subscription['signature'],
+                $this->session->keys, $this->session->id, $this->signature,
                 (string) $message->lastEventId, $message->event, $message->data,
             );
         } catch (SecurityException $e) {
-            Log::warning("Asgard: dropped a pushed event for [{$component}] that failed verification: ".$e->getMessage());
+            Log::warning('Asgard: dropped a pushed event that failed verification: '.$e->getMessage());
 
             return;
         }
 
         $payload = json_decode($plaintext, true);
+        $id = is_array($payload) ? ($payload['subscription'] ?? null) : null;
         $region = is_array($payload) ? ($payload['region'] ?? null) : null;
+        $version = is_array($payload) ? ($payload['version'] ?? null) : null;
+        $subscription = is_string($id) ? ($this->subscriptions[$id] ?? null) : null;
 
-        if (! is_string($region) || ! is_array($payload['fragment'] ?? null)
-            || ! in_array($region, $subscription['regions'], true)) {
-            Log::warning("Asgard: ignored a pushed event for [{$component}] that is not a fragment for a subscribed region");
+        if ($subscription === null || ! is_string($region) || ! in_array($region, $subscription['regions'], true)
+            || ! is_string($version) || $version === '' || strlen($version) > 64) {
+            Log::warning('Asgard: ignored a pushed event that is not for a subscription and region of this stream');
 
             return;
         }
 
+        if ($message->event === 'signal') {
+            ($this->signaller)($subscription['component'], $subscription['state'], $region, $version);
+
+            return;
+        }
+
+        if (! is_array($payload['fragment'] ?? null)) {
+            Log::warning("Asgard: ignored a fragment event for [{$subscription['component']}] [{$region}] with no fragment");
+
+            return;
+        }
+
+        // A reconnect sends this version, so the region is not sent again.
+        $this->subscriptions[$id]['versions'][$region] = $version;
+
         // A server screen's event carries its chrome too, checked by the screen.
         $chrome = $payload['chrome'] ?? null;
 
-        ($this->pusher)($component, $region, $payload['fragment'], is_array($chrome) ? $chrome : null);
+        ($this->pusher)($subscription['component'], $subscription['state'], $region, $payload['fragment'], is_array($chrome) ? $chrome : null, $version);
     }
 
     public function opened(StreamOpened $event): void
     {
-        $component = $this->component($event->id);
-
-        if ($component !== null && isset($this->subscriptions[$component])) {
-            $this->subscriptions[$component]['retried'] = false;
+        if ($event->id === self::ID) {
+            $this->retried = false;
         }
     }
 
     public function closed(StreamClosed $event): void
     {
-        $component = $this->component($event->id);
-        $subscription = $component === null ? null : ($this->subscriptions[$component] ?? null);
-
-        if ($subscription === null) {
+        if ($event->id !== self::ID || $this->subscriptions === []) {
             return;
         }
 
         if ($event->reconnect) {
-            $this->open($component);
+            $this->open();
 
             return;
         }
 
-        if ($event->status === 419 && ! $subscription['retried']) {
-            $this->subscriptions[$component]['retried'] = true;
-            $this->refresh($component);
+        if ($event->status === 419 && ! $this->retried) {
+            $this->retried = true;
+            $this->refresh();
 
             return;
         }
 
-        Log::warning("Asgard: the stream for [{$component}] stopped", ['error' => $event->error, 'status' => $event->status]);
+        Log::warning('Asgard: the push stream stopped', ['error' => $event->error, 'status' => $event->status]);
 
-        unset($this->subscriptions[$component]);
+        $this->forget();
+        $this->subscriptions = [];
     }
 
     public function close(): void
     {
-        $components = array_keys($this->subscriptions);
         $this->subscriptions = [];
+        $this->forget();
 
-        foreach ($components as $component) {
-            Stream::close(self::PREFIX.$component);
-        }
+        Stream::close(self::ID);
     }
 
-    /** @return array<string, array{regions: list<string>, state: array, platform: string, session: ?Session, signature: ?string, retried: bool}> */
+    /** @return array<string, array{id: string, component: string, regions: list<string>, state: array, versions: array<string, string>}> */
     public function subscriptions(): array
     {
         return $this->subscriptions;
     }
 
-    protected function open(string $component): void
+    protected function open(): void
     {
-        $subscription = $this->subscriptions[$component] ?? null;
-
-        if ($subscription === null) {
+        if ($this->subscriptions === []) {
             return;
         }
 
         $session = $this->client->currentSession();
 
         if ($session === null) {
-            $this->refresh($component);
+            $this->refresh();
 
             return;
         }
 
+        $subscriptions = [];
+        foreach ($this->subscriptions as $subscription) {
+            $wire = [
+                'id' => $subscription['id'],
+                'component' => $subscription['component'],
+                'regions' => $subscription['regions'],
+                'state' => (object) $subscription['state'],
+            ];
+
+            if ($subscription['versions'] !== []) {
+                $wire['versions'] = $subscription['versions'];
+            }
+
+            $subscriptions[] = $wire;
+        }
+
         $sealed = $this->client->sealStream($session, json_encode([
             'protocol' => 1,
-            'component' => $component,
-            'regions' => $subscription['regions'],
-            'state' => $subscription['state'],
-            'platform' => $subscription['platform'],
+            'platform' => $this->platform,
+            'subscriptions' => $subscriptions,
         ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR));
 
-        $this->subscriptions[$component]['session'] = $session;
-        $this->subscriptions[$component]['signature'] = $sealed['signature'];
+        $this->session = $session;
+        $this->signature = $sealed['signature'];
 
-        Stream::open(self::PREFIX.$component, $this->client->endpoint('stream'), $sealed['headers'] + ['accept' => 'text/event-stream'], $sealed['body']);
+        Stream::open(self::ID, $this->client->endpoint('stream'), $sealed['headers'] + ['accept' => 'text/event-stream'], $sealed['body']);
     }
 
     /** Get a new session without blocking the UI lane, then open the stream with it. */
-    protected function refresh(string $component): void
+    protected function refresh(): void
     {
-        $then = function (bool $ok) use ($component) {
-            if (! isset($this->subscriptions[$component])) {
+        $then = function (bool $ok) {
+            if ($this->subscriptions === []) {
                 return;
             }
 
             if ($ok && $this->client->currentSession() !== null) {
-                $this->open($component);
+                $this->open();
 
                 return;
             }
 
-            Log::warning("Asgard: no session for the stream of [{$component}]");
-            unset($this->subscriptions[$component]);
+            Log::warning('Asgard: no session for the push stream');
+            $this->forget();
+            $this->subscriptions = [];
         };
 
         if ($this->refresh !== null) {
@@ -227,8 +281,16 @@ class RegionStreams
         }
     }
 
-    protected function component(string $streamId): ?string
+    /** Events from here on belong to no stream this class opened. */
+    protected function forget(): void
     {
-        return str_starts_with($streamId, self::PREFIX) ? substr($streamId, strlen(self::PREFIX)) : null;
+        $this->session = null;
+        $this->signature = null;
+    }
+
+    /** The set without versions, for telling whether it changed. */
+    protected static function shape(array $subscriptions): array
+    {
+        return array_map(fn (array $s) => array_diff_key($s, ['versions' => true]), $subscriptions);
     }
 }

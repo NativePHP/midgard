@@ -29,6 +29,21 @@ it('handshakes once, then signs, encrypts and verifies every render', function (
         ->and($this->server->requests[0]['nonce'])->toBeNull();
 });
 
+it('hands back a well-formed version token and drops a malformed one', function (mixed $version, ?string $expected) {
+    $this->server->plaintext = json_encode(['protocol' => 1, 'region' => 'stats', 'version' => $version, 'fragment' => ['type' => 'text']]);
+
+    $result = $this->client->render(renderBody());
+
+    expect($result['ok'])->toBeTrue()
+        ->and($result['version'] ?? null)->toBe($expected);
+})->with([
+    'a token' => ['q3V0bG9yZW1pcHN1', 'q3V0bG9yZW1pcHN1'],
+    'not a string' => [5, null],
+    'empty' => ['', null],
+    'too long' => [str_repeat('a', 65), null],
+    'other characters' => ['a b', null],
+]);
+
 it('keeps the session in the cache, where every lane can read it', function () {
     $this->client->render(renderBody());
 

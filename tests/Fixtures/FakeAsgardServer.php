@@ -71,7 +71,7 @@ class FakeAsgardServer
         $parts = parse_url($url);
         $opened = Wire::openRequest($this->sessions[$session], $session, 'POST', $parts['host'], $parts['path'], $headers, $body, time());
 
-        return ['body' => json_decode($opened['body'], true), 'signature' => $opened['signature'], 'session' => $session];
+        return ['body' => json_decode($opened['body'], true), 'raw' => $opened['body'], 'signature' => $opened['signature'], 'session' => $session];
     }
 
     protected function handle(RequestInterface $request): Response

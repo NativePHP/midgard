@@ -22,9 +22,10 @@ return [
         // default store.
         'session_store' => env('ASGARD_SESSION_STORE'),
 
-        // Hold a Server-Sent Events stream open per component so the server
-        // can push fragments. The stream lives in native code. Off by
-        // default: each open stream ties up a PHP worker on the server.
+        // Hold one Server-Sent Events stream open per device, so the server
+        // can say when a region on screen changed. The stream lives in
+        // native code. Off by default: an open stream ties up a PHP worker
+        // on the server for as long as it is open.
         'stream' => (bool) env('ASGARD_STREAM', false),
     ],
 
