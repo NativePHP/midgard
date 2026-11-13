@@ -60,11 +60,18 @@ it('takes an empty delta', function () {
         ->toBe(['ok' => true, 'status' => 200, 'delta' => []]);
 });
 
-it('passes fragments through when the server sent an object of them', function () {
-    $this->server->plaintext = json_encode(['protocol' => 1, 'delta' => ['a' => 1], 'fragments' => ['stats' => ['type' => 'text']]]);
+it('passes fragments and hints through', function () {
+    $this->server->plaintext = json_encode([
+        'protocol' => 1, 'delta' => ['a' => 1],
+        'fragments' => ['stats' => ['version' => 'v1', 'fragment' => ['type' => 'text']]],
+        'refresh' => [['component' => 'app.inbox', 'region' => 'unread'], ['component' => 'app.feed']],
+    ]);
 
-    expect($this->client->callMethod(HttpServerTransport::wireBody(serverRequest())))
-        ->toBe(['ok' => true, 'status' => 200, 'delta' => ['a' => 1], 'fragments' => ['stats' => ['type' => 'text']]]);
+    expect($this->client->callMethod(HttpServerTransport::wireBody(serverRequest())))->toBe([
+        'ok' => true, 'status' => 200, 'delta' => ['a' => 1],
+        'fragments' => ['stats' => ['fragment' => ['type' => 'text'], 'version' => 'v1']],
+        'refresh' => [['component' => 'app.inbox', 'region' => 'unread'], ['component' => 'app.feed']],
+    ]);
 });
 
 it('refuses an answer that is not a call answer', function (string $plaintext) {
@@ -76,6 +83,13 @@ it('refuses an answer that is not a call answer', function (string $plaintext) {
     'no delta' => ['{"protocol":1,"fragment":{"type":"text"}}'],
     'a list delta' => ['{"protocol":1,"delta":[1,2]}'],
     'a string delta' => ['{"protocol":1,"delta":"x"}'],
+    'fragments as bare trees' => ['{"protocol":1,"delta":{},"fragments":{"stats":{"type":"text"}}}'],
+    'fragments as a list' => ['{"protocol":1,"delta":{},"fragments":[{"fragment":1}]}'],
+    'empty fragments' => ['{"protocol":1,"delta":{},"fragments":{}}'],
+    'a hint without a component' => ['{"protocol":1,"delta":{},"refresh":[{"region":"a"}]}'],
+    'a hint with a number region' => ['{"protocol":1,"delta":{},"refresh":[{"component":"a","region":1}]}'],
+    'a hint with another member' => ['{"protocol":1,"delta":{},"refresh":[{"component":"a","state":{}}]}'],
+    'refresh as an object' => ['{"protocol":1,"delta":{},"refresh":{"component":"a"}}'],
 ]);
 
 it('handshakes again and retries once when the server lost the session', function () {
@@ -135,7 +149,16 @@ it('delivers the answer under the id it returned', function () {
 
     (AsyncTask::$dispatched[0]->finished)(['ok' => true, 'status' => 200, 'delta' => ['roll' => 4]]);
 
-    expect(ServerMethods::$delivered)->toBe([['id' => $id, 'ok' => true, 'delta' => ['roll' => 4], 'fragments' => []]]);
+    expect(ServerMethods::$delivered)->toBe([['id' => $id, 'ok' => true, 'delta' => ['roll' => 4], 'fragments' => [], 'refresh' => []]]);
+});
+
+it('hands the regions and hints a call answer carries to deliver', function () {
+    $fragments = ['stats' => ['fragment' => ['type' => 'text'], 'version' => 'v1']];
+    $refresh = [['component' => 'app.inbox', 'region' => 'unread']];
+
+    HttpServerTransport::answered('call-1', ['ok' => true, 'status' => 200, 'delta' => [], 'fragments' => $fragments, 'refresh' => $refresh], 'https://a.test/_asgard/call', 'roll');
+
+    expect(ServerMethods::$delivered)->toBe([['id' => 'call-1', 'ok' => true, 'delta' => [], 'fragments' => $fragments, 'refresh' => $refresh]]);
 });
 
 it('reports a lane that cannot start through deliver, before send returns', function () {

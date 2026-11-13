@@ -28,6 +28,9 @@ class AsgardClient
 {
     public const ENCODING = 'tree/json';
 
+    /** At most this many regions, or hints, in one answer. */
+    public const MAX_PARTS = 16;
+
     public function __construct(
         protected string $url,
         protected string $path,
@@ -119,8 +122,13 @@ class AsgardClient
      * for the device to check. The region's version token comes back too,
      * when the server sent a well-formed one.
      *
+     * An action's answer may also carry `fragments`, other regions of the
+     * same component the action asked for, and `refresh`, hints naming other
+     * components. A body with `regions` is a batch, and its answer is only
+     * `fragments`, one part per region.
+     *
      * @param  array<string, mixed>  $body  The wire body, protocol member included.
-     * @return array{ok: bool, status: int, fragment?: mixed, chrome?: array, version?: string, error?: string}
+     * @return array{ok: bool, status: int, fragment?: mixed, chrome?: array, version?: string, fragments?: array<string, array{fragment: mixed, version?: string, chrome?: array}>, refresh?: list<array{component: string, region?: string}>, error?: string}
      */
     public function render(array $body): array
     {
@@ -131,37 +139,40 @@ class AsgardClient
         }
 
         $json = $result['json'];
+        $bad = ['ok' => false, 'status' => $result['status'], 'error' => 'bad response'];
+
+        if (array_key_exists('regions', $body)) {
+            $parts = self::parts($json['fragments'] ?? null);
+
+            return $parts === null ? $bad : ['ok' => true, 'status' => $result['status'], 'fragments' => $parts];
+        }
 
         if (! array_key_exists('fragment', $json)) {
-            return ['ok' => false, 'status' => $result['status'], 'error' => 'bad response'];
+            return $bad;
         }
 
-        $answer = ['ok' => true, 'status' => $result['status'], 'fragment' => $json['fragment']];
+        $part = self::part($json);
 
-        // The region's version token (§8.1), handed back when it subscribes.
-        $version = $json['version'] ?? null;
-        if (is_string($version) && preg_match('/^[A-Za-z0-9_-]{1,64}$/D', $version)) {
-            $answer['version'] = $version;
+        if ($part === null) {
+            return ['ok' => false, 'status' => $result['status'], 'error' => 'chrome is not an object'];
         }
 
-        if (array_key_exists('chrome', $json)) {
-            if (! is_array($json['chrome'])) {
-                return ['ok' => false, 'status' => $result['status'], 'error' => 'chrome is not an object'];
-            }
+        $more = self::more($json);
 
-            $answer['chrome'] = $json['chrome'];
+        if ($more === null) {
+            return $bad;
         }
 
-        return $answer;
+        return ['ok' => true, 'status' => $result['status'], ...$part, ...$more];
     }
 
     /**
      * One `#[Server]` method call (protocol §10.5). Unsafe, so it carries a
-     * nonce. The answer is the props the server changed. Fragments come back
-     * too when the server sent an object of them, for the device to check.
+     * nonce. The answer is the props the server changed, plus any regions
+     * and hints the method asked for with refresh().
      *
      * @param  array<string, mixed>  $body  The wire body, protocol member included.
-     * @return array{ok: bool, status: int, delta?: array<string, mixed>, fragments?: array<string, mixed>, error?: string}
+     * @return array{ok: bool, status: int, delta?: array<string, mixed>, fragments?: array<string, array{fragment: mixed, version?: string, chrome?: array}>, refresh?: list<array{component: string, region?: string}>, error?: string}
      */
     public function callMethod(array $body): array
     {
@@ -172,19 +183,128 @@ class AsgardClient
         }
 
         $delta = $result['json']['delta'] ?? null;
+        $more = self::more($result['json']);
 
-        if (! is_array($delta) || ($delta !== [] && array_is_list($delta))) {
+        if (! is_array($delta) || ($delta !== [] && array_is_list($delta)) || $more === null) {
             return ['ok' => false, 'status' => $result['status'], 'error' => 'bad response'];
         }
 
-        $answer = ['ok' => true, 'status' => $result['status'], 'delta' => $delta];
+        return ['ok' => true, 'status' => $result['status'], 'delta' => $delta, ...$more];
+    }
 
-        $fragments = $result['json']['fragments'] ?? null;
-        if (is_array($fragments) && $fragments !== [] && ! array_is_list($fragments)) {
-            $answer['fragments'] = $fragments;
+    /**
+     * The optional `fragments` and `refresh` members of an action or call
+     * answer, or null when either is malformed. Absent members stay absent.
+     *
+     * @param  array<string, mixed>  $json
+     * @return array{fragments?: array<string, array{fragment: mixed, version?: string, chrome?: array}>, refresh?: list<array{component: string, region?: string}>}|null
+     */
+    protected static function more(array $json): ?array
+    {
+        $more = [];
+
+        if (array_key_exists('fragments', $json)) {
+            $parts = self::parts($json['fragments']);
+
+            if ($parts === null) {
+                return null;
+            }
+
+            $more['fragments'] = $parts;
         }
 
-        return $answer;
+        if (array_key_exists('refresh', $json)) {
+            $hints = self::hints($json['refresh']);
+
+            if ($hints === null) {
+                return null;
+            }
+
+            $more['refresh'] = $hints;
+        }
+
+        return $more;
+    }
+
+    /**
+     * `{region: {version?, fragment, chrome?}}`, at least one region, or null.
+     *
+     * @return array<string, array{fragment: mixed, version?: string, chrome?: array}>|null
+     */
+    protected static function parts(mixed $fragments): ?array
+    {
+        if (! is_array($fragments) || $fragments === [] || array_is_list($fragments) || count($fragments) > self::MAX_PARTS) {
+            return null;
+        }
+
+        $parts = [];
+
+        foreach ($fragments as $region => $part) {
+            if (! is_array($part) || ! array_key_exists('fragment', $part) || ($part = self::part($part)) === null) {
+                return null;
+            }
+
+            $parts[(string) $region] = $part;
+        }
+
+        return $parts;
+    }
+
+    /**
+     * One region's fragment, with its version token when well-formed and its
+     * chrome when it is an object. Null when the chrome is not one.
+     *
+     * @param  array<string, mixed>  $json
+     * @return array{fragment: mixed, version?: string, chrome?: array}|null
+     */
+    protected static function part(array $json): ?array
+    {
+        $part = ['fragment' => $json['fragment']];
+
+        // The region's version token (§8.1), handed back when it subscribes.
+        $version = $json['version'] ?? null;
+        if (is_string($version) && preg_match('/^[A-Za-z0-9_-]{1,64}$/D', $version)) {
+            $part['version'] = $version;
+        }
+
+        if (array_key_exists('chrome', $json)) {
+            if (! is_array($json['chrome'])) {
+                return null;
+            }
+
+            $part['chrome'] = $json['chrome'];
+        }
+
+        return $part;
+    }
+
+    /**
+     * `[{component, region?}]`, each a string, or null. The device checks
+     * the names against what it has on screen.
+     *
+     * @return list<array{component: string, region?: string}>|null
+     */
+    protected static function hints(mixed $refresh): ?array
+    {
+        if (! is_array($refresh) || ! array_is_list($refresh) || count($refresh) > self::MAX_PARTS) {
+            return null;
+        }
+
+        $hints = [];
+
+        foreach ($refresh as $hint) {
+            if (! is_array($hint) || ! is_string($hint['component'] ?? null) || array_diff(array_keys($hint), ['component', 'region']) !== []) {
+                return null;
+            }
+
+            if (array_key_exists('region', $hint) && ! is_string($hint['region'])) {
+                return null;
+            }
+
+            $hints[] = $hint;
+        }
+
+        return $hints;
     }
 
     /**

@@ -209,3 +209,62 @@ it('refuses an answer whose compression marker was flipped or stripped', functio
         return $s;
     }],
 ]);
+
+// ── Inline fragments, hints and batches ─────────────
+
+it('hands back the regions and hints an action answer carries', function () {
+    $this->server->plaintext = json_encode([
+        'protocol' => 1, 'region' => 'stats', 'version' => 'v1', 'fragment' => ['type' => 'text'],
+        'fragments' => ['greeting' => ['version' => 'v2', 'fragment' => ['type' => 'column'], 'chrome' => []]],
+        'refresh' => [['component' => 'app.inbox']],
+    ]);
+
+    expect($this->client->render(renderBody(['action' => ['call' => 'bump', 'args' => []]])))->toBe([
+        'ok' => true, 'status' => 200,
+        'fragment' => ['type' => 'text'], 'version' => 'v1',
+        'fragments' => ['greeting' => ['fragment' => ['type' => 'column'], 'version' => 'v2', 'chrome' => []]],
+        'refresh' => [['component' => 'app.inbox']],
+    ]);
+});
+
+it('sends a batch and hands back one part per region', function () {
+    $body = renderBody(['regions' => ['stats', 'chart']]);
+    unset($body['region']);
+
+    $this->server->plaintext = json_encode(['protocol' => 1, 'fragments' => [
+        'stats' => ['version' => 'v1', 'fragment' => ['type' => 'text']],
+        'chart' => ['version' => 'not a token!', 'fragment' => []],
+    ]]);
+
+    expect($this->client->render($body))->toBe(['ok' => true, 'status' => 200, 'fragments' => [
+        'stats' => ['fragment' => ['type' => 'text'], 'version' => 'v1'],
+        'chart' => ['fragment' => []],
+    ]]);
+
+    expect($this->server->requests[0]['body'])->toBe($body)
+        ->and($this->server->requests[0]['nonce'])->toBeNull();
+});
+
+it('refuses a batch answer that is not one', function (string $plaintext) {
+    $body = renderBody(['regions' => ['stats']]);
+    unset($body['region']);
+
+    $this->server->plaintext = $plaintext;
+
+    expect($this->client->render($body))->toBe(['ok' => false, 'status' => 200, 'error' => 'bad response']);
+})->with([
+    'a single answer' => ['{"protocol":1,"region":"stats","fragment":{"type":"text"}}'],
+    'a part without a fragment' => ['{"protocol":1,"fragments":{"stats":{"version":"v1"}}}'],
+    'chrome that is not an object' => ['{"protocol":1,"fragments":{"stats":{"fragment":{},"chrome":"x"}}}'],
+    'a list' => ['{"protocol":1,"fragments":[{"fragment":{}}]}'],
+]);
+
+it('refuses an action answer with malformed extras', function (string $extra) {
+    $this->server->plaintext = '{"protocol":1,"region":"stats","fragment":{"type":"text"},'.$extra.'}';
+
+    expect($this->client->render(renderBody(['action' => ['call' => 'bump', 'args' => []]])))
+        ->toBe(['ok' => false, 'status' => 200, 'error' => 'bad response']);
+})->with([
+    'bare fragments' => ['"fragments":{"greeting":{"type":"text"}}'],
+    'a hint that is a string' => ['"refresh":["app.inbox"]'],
+]);

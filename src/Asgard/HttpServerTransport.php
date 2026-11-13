@@ -16,7 +16,8 @@ use Native\Mobile\Edge\Asgard\ServerRequest;
  * does, so the UI never waits on the network. send() makes the request id,
  * starts the lane and returns the id. The answer comes back on the UI
  * thread, where ServerMethods::deliver() finds the call by that id, applies
- * the delta and runs the closure.
+ * the delta, paints any regions the method asked for, hands on any hints and
+ * runs the closure.
  *
  * The answer is taken on whichever screen is on top when it lands. The
  * pending table is keyed by id, so it does not need the calling screen to
@@ -76,6 +77,7 @@ class HttpServerTransport implements ServerTransport
                 'ok' => true,
                 'delta' => $result['delta'],
                 'fragments' => is_array($result['fragments'] ?? null) ? $result['fragments'] : [],
+                'refresh' => is_array($result['refresh'] ?? null) ? $result['refresh'] : [],
             ]);
 
             return;

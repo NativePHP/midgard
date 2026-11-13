@@ -6,6 +6,7 @@ use Illuminate\Support\Facades\Log;
 use Native\Mobile\AsyncTask;
 use Native\Mobile\Edge\Asgard\ActionRequest;
 use Native\Mobile\Edge\Asgard\Contracts\FragmentSource;
+use Native\Mobile\Edge\Asgard\RegionBatch;
 use Native\Mobile\Edge\Asgard\RegionRequest;
 use Native\Mobile\Edge\Asgard\ServerRegion;
 
@@ -28,6 +29,16 @@ use Native\Mobile\Edge\Asgard\ServerRegion;
  * Every call is signed and encrypted (protocol §7) by AsgardClient, which
  * also handshakes when there is no session. A fragment whose response does
  * not verify never reaches the region.
+ *
+ * An action's answer can also carry other regions of the same component and
+ * hints naming other components (from refresh() on the server). Both are
+ * handed to deliver() with the action's own fragment, and the device decides
+ * which owners they reach.
+ *
+ * Several regions of one component and state go out as one batch request,
+ * `regions` instead of `region`. Each region in it is still its own request
+ * on the device. The answer is handed to deliverBatch(), and a batch that
+ * fails fails every region in it through failedBatch().
  *
  * Each answer carries the region's version token, which is handed over with
  * the fragment. The device uses it to say what it already holds when it
@@ -67,6 +78,23 @@ class HttpFragmentSource implements FragmentSource
         $this->send($request);
     }
 
+    public function batch(RegionBatch $batch): void
+    {
+        $config = $this->config;
+        $endpoint = $this->endpoint('render');
+        $body = ['protocol' => 1, ...$batch->toArray()];
+        $what = 'regions ['.implode(', ', $batch->regions()).']';
+
+        AsyncTask::dispatch(static fn () => RenderCall::send($config, $body))
+            // Named, not static::, as a callback may be bound to the screen.
+            ->finished(function ($result) use ($batch, $endpoint, $what) {
+                HttpFragmentSource::answeredBatch($batch, $result, $endpoint, $what);
+            })
+            ->failed(function (\Throwable $e) use ($batch, $what) {
+                HttpFragmentSource::lostBatch($batch, $e, $what);
+            });
+    }
+
     public function watch(array $subscriptions, string $platform): void
     {
         $this->streams?->watch($subscriptions, $platform);
@@ -101,11 +129,57 @@ class HttpFragmentSource implements FragmentSource
     public static function answered(RegionRequest $request, mixed $result, string $endpoint, string $what): void
     {
         if (is_array($result) && ($result['ok'] ?? false)) {
-            ServerRegion::deliver($request, $result['fragment'], $result['chrome'] ?? null, $result['version'] ?? null);
+            ServerRegion::deliver(
+                $request,
+                $result['fragment'],
+                $result['chrome'] ?? null,
+                $result['version'] ?? null,
+                $result['fragments'] ?? [],
+                $result['refresh'] ?? [],
+            );
 
             return;
         }
 
+        [$reason, $status, $error] = self::failure($result, $endpoint, $what);
+
+        ServerRegion::failed($request, $reason, $status, $error);
+    }
+
+    /**
+     * A batch render came back: deliver each region's part, or fail them all.
+     *
+     * @param  mixed  $result  What RenderCall::send() returned.
+     */
+    public static function answeredBatch(RegionBatch $batch, mixed $result, string $endpoint, string $what): void
+    {
+        if (is_array($result) && ($result['ok'] ?? false) && is_array($result['fragments'] ?? null)) {
+            ServerRegion::deliverBatch($batch, $result['fragments']);
+
+            return;
+        }
+
+        [$reason, $status, $error] = self::failure($result, $endpoint, $what);
+
+        ServerRegion::failedBatch($batch, $reason, $status, $error);
+    }
+
+    /** A batch render never came back: every region in it failed. */
+    public static function lostBatch(RegionBatch $batch, \Throwable $e, string $what): void
+    {
+        Log::warning("Asgard: fetching {$what} failed: ".$e->getMessage());
+
+        ServerRegion::failedBatch($batch, ServerRegion::NETWORK, null, $e->getMessage());
+    }
+
+    /**
+     * Log a failed answer and say why it failed: the reason, the HTTP status
+     * (null when nothing came back) and the error.
+     *
+     * @return array{0: string, 1: ?int, 2: string}
+     */
+    protected static function failure(mixed $result, string $endpoint, string $what): array
+    {
         $status = is_array($result) && is_int($result['status'] ?? null) ? $result['status'] : 0;
         $error = is_array($result) && is_string($result['error'] ?? null) ? $result['error'] : 'no answer';
 
@@ -115,7 +189,7 @@ class HttpFragmentSource implements FragmentSource
             'error' => $error,
         ]);
 
-        ServerRegion::failed($request, self::reasonFor($status, $error), $status === 0 ? null : $status, $error);
+        return [self::reasonFor($status, $error), $status === 0 ? null : $status, $error];
     }
 
     /** The render call never came back: the lane died or timed out. */
