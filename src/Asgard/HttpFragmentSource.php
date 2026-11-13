@@ -38,8 +38,14 @@ use Native\Mobile\Edge\Asgard\ServerRegion;
  * got a good answer, so the session the stream is signed with exists. With
  * streaming off it does nothing.
  *
- * Any failure leaves the region as it was: on its placeholder, or on the
- * last fragment it painted. Failures are logged, never thrown.
+ * A failure is reported to ServerRegion::failed() with a reason, and the
+ * HTTP status when the server answered: `network` when nothing came back,
+ * `server` for an error status (a 419 that survived its one retry
+ * included), and `invalid` for an answer that failed verification or is
+ * not a fragment response. The device decides what that means: a region
+ * keeps what it had, a server screen still waiting for its body gives up,
+ * and an action fires ServerActionFailed. Failures are also logged, never
+ * thrown.
  */
 class HttpFragmentSource implements FragmentSource
 {
@@ -77,22 +83,66 @@ class HttpFragmentSource implements FragmentSource
             : "region [{$request->region}]";
 
         AsyncTask::dispatch(static fn () => RenderCall::send($config, $body))
+            // Named, not static::, as a callback may be bound to the screen.
             ->finished(function ($result) use ($request, $endpoint, $what) {
-                if (is_array($result) && ($result['ok'] ?? false)) {
-                    ServerRegion::deliver($request, $result['fragment'], $result['chrome'] ?? null, $result['version'] ?? null);
-
-                    return;
-                }
-
-                Log::warning("Asgard: no fragment for {$what}", [
-                    'endpoint' => $endpoint,
-                    'status' => $result['status'] ?? null,
-                    'error' => $result['error'] ?? null,
-                ]);
+                HttpFragmentSource::answered($request, $result, $endpoint, $what);
             })
-            ->failed(function (\Throwable $e) use ($what) {
-                Log::warning("Asgard: fetching {$what} failed: ".$e->getMessage());
+            ->failed(function (\Throwable $e) use ($request, $what) {
+                HttpFragmentSource::lost($request, $e, $what);
             });
+    }
+
+    /**
+     * The render call came back: deliver the fragment, or report why there
+     * is none.
+     *
+     * @param  mixed  $result  What RenderCall::send() returned.
+     */
+    public static function answered(RegionRequest $request, mixed $result, string $endpoint, string $what): void
+    {
+        if (is_array($result) && ($result['ok'] ?? false)) {
+            ServerRegion::deliver($request, $result['fragment'], $result['chrome'] ?? null, $result['version'] ?? null);
+
+            return;
+        }
+
+        $status = is_array($result) && is_int($result['status'] ?? null) ? $result['status'] : 0;
+        $error = is_array($result) && is_string($result['error'] ?? null) ? $result['error'] : 'no answer';
+
+        Log::warning("Asgard: no fragment for {$what}", [
+            'endpoint' => $endpoint,
+            'status' => $status,
+            'error' => $error,
+        ]);
+
+        ServerRegion::failed($request, self::reasonFor($status, $error), $status === 0 ? null : $status, $error);
+    }
+
+    /** The render call never came back: the lane died or timed out. */
+    public static function lost(RegionRequest $request, \Throwable $e, string $what): void
+    {
+        Log::warning("Asgard: fetching {$what} failed: ".$e->getMessage());
+
+        ServerRegion::failed($request, ServerRegion::NETWORK, null, $e->getMessage());
+    }
+
+    /**
+     * Why a render call failed, from what AsgardClient answered. Status 0 is
+     * a request that got no response. An answer that failed verification,
+     * or a 2xx that is not a fragment response, is `invalid`. Any other
+     * status is the server's.
+     */
+    public static function reasonFor(int $status, string $error): string
+    {
+        if ($status === 0) {
+            return ServerRegion::NETWORK;
+        }
+
+        if (str_starts_with($error, 'response failed verification') || ($status >= 200 && $status < 300)) {
+            return ServerRegion::INVALID;
+        }
+
+        return ServerRegion::SERVER;
     }
 
     protected function endpoint(string $name): string
