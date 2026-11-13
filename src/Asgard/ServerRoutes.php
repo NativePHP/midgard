@@ -23,19 +23,11 @@ use Illuminate\Support\Facades\Log;
  *
  * The router (`$register`) checks every route again and keeps app routes
  * ahead of the server's, so nothing here decides which screen wins.
- *
- * A route may carry a `title` template, like `Promo #{id}`, that the device
- * shows the moment the screen opens. AsgardClient::routes() drops a title
- * that fails validTitle() and keeps the route, so the cache only ever
- * holds titles that passed. The router checks them again too.
  */
 class ServerRoutes
 {
     /** Seconds before a failed fetch may be tried again. */
     public const RETRY_AFTER = 60;
-
-    /** The longest title template, in characters. */
-    public const TITLE_MAX = 100;
 
     protected bool $refreshed = false;
 
@@ -44,7 +36,7 @@ class ServerRoutes
     protected int $retryAt = 0;
 
     /**
-     * @param  Closure(list<array{uri: string, screen: string, title?: string}>): int  $register  Puts a list into the router.
+     * @param  Closure(list<array{uri: string, screen: string}>): int  $register  Puts a list into the router.
      * @param  Closure(Closure(array): void): void  $fetch  Fetches off the UI lane, then calls back with RenderCall::routes()'s answer.
      */
     public function __construct(
@@ -53,20 +45,6 @@ class ServerRoutes
         protected Closure $register,
         protected Closure $fetch,
     ) {}
-
-    /**
-     * Whether a route's title template can be shown: a string of valid
-     * UTF-8, not blank, at most TITLE_MAX characters, and free of control
-     * characters. It is shown as plain text, never markup.
-     */
-    public static function validTitle(mixed $title): bool
-    {
-        return is_string($title)
-            && mb_check_encoding($title, 'UTF-8')
-            && trim($title) !== ''
-            && mb_strlen($title) <= self::TITLE_MAX
-            && preg_match('/\p{Cc}/u', $title) === 0;
-    }
 
     /** A cache key per server and Asgard key, so two servers never share a list. */
     public static function keyFor(string $url, string $asgardKey): string
@@ -134,7 +112,7 @@ class ServerRoutes
         ($this->register)(array_values($result['routes']));
     }
 
-    /** @return array{version: string, routes: list<array{uri: string, screen: string, title?: string}>}|null */
+    /** @return array{version: string, routes: list<array{uri: string, screen: string}>}|null */
     public function cached(): ?array
     {
         // This runs at boot, for every request and artisan command. A cache

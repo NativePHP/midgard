@@ -310,10 +310,8 @@ class AsgardClient
     /**
      * The server's screen routes (protocol §12, "Routes"). Only the shape is
      * checked here; the router checks each route again when it registers it.
-     * A route whose `title` is not a valid title template keeps its place
-     * without the title.
      *
-     * @return array{ok: bool, status: int, routes?: list<array{uri: string, screen: string, title?: string}>, version?: string, error?: string}
+     * @return array{ok: bool, status: int, routes?: list<array{uri: string, screen: string}>, version?: string, error?: string}
      */
     public function routes(): array
     {
@@ -330,15 +328,9 @@ class AsgardClient
             return ['ok' => false, 'status' => $result['status'], 'error' => 'route list is malformed'];
         }
 
-        foreach ($routes as $i => $route) {
+        foreach ($routes as $route) {
             if (! is_array($route) || ! is_string($route['uri'] ?? null) || ! is_string($route['screen'] ?? null)) {
                 return ['ok' => false, 'status' => $result['status'], 'error' => 'route list is malformed'];
-            }
-
-            // A bad title loses the title, not the route: the screen still
-            // opens, with the app's placeholder title until its body lands.
-            if (array_key_exists('title', $route) && ! ServerRoutes::validTitle($route['title'])) {
-                unset($routes[$i]['title']);
             }
         }
 

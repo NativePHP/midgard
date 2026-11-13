@@ -59,49 +59,6 @@ it('refuses a malformed route list', function (string $plaintext) {
     'a route without a screen' => ['{"protocol":1,"version":"v","routes":[{"uri":"/a"}]}'],
 ]);
 
-it('keeps a valid title template on a route', function () {
-    $this->server->routes = [['uri' => '/promos/{id}', 'screen' => 'promos.show', 'title' => 'Promo #{id}']];
-
-    expect($this->client->routes()['routes'])->toBe([['uri' => '/promos/{id}', 'screen' => 'promos.show', 'title' => 'Promo #{id}']]);
-});
-
-it('drops a bad title and keeps its route', function (mixed $title) {
-    $this->server->routes = [
-        ['uri' => '/promos/{id}', 'screen' => 'promos.show', 'title' => $title],
-        ['uri' => '/inbox', 'screen' => 'inbox', 'title' => 'Inbox'],
-    ];
-
-    expect($this->client->routes())->toMatchArray(['ok' => true, 'routes' => [
-        ['uri' => '/promos/{id}', 'screen' => 'promos.show'],
-        ['uri' => '/inbox', 'screen' => 'inbox', 'title' => 'Inbox'],
-    ]]);
-})->with([
-    'not a string' => [['Promo']],
-    'null' => [null],
-    'blank' => ['  '],
-    'a control character' => ["Promo\n#{id}"],
-    'a bell' => ["Promo\x07"],
-    'over 100 characters' => [str_repeat('a', 101)],
-]);
-
-it('takes a title of exactly 100 characters, counted as characters', function () {
-    $title = str_repeat('é', 100);
-    $this->server->routes = [['uri' => '/a', 'screen' => 'a', 'title' => $title]];
-
-    expect($this->client->routes()['routes'][0]['title'])->toBe($title);
-});
-
-it('caches and registers titles with the routes', function () {
-    $this->server->routes = [['uri' => '/promos/{id}', 'screen' => 'promos.show', 'title' => 'Promo #{id}'], ['uri' => '/x', 'screen' => 'x', 'title' => "bad\x00"]];
-    $this->routes->refresh();
-    ($this->pending)();
-
-    $expected = [['uri' => '/promos/{id}', 'screen' => 'promos.show', 'title' => 'Promo #{id}'], ['uri' => '/x', 'screen' => 'x']];
-
-    expect($this->registered)->toBe([$expected])
-        ->and($this->routes->cached())->toBe(['version' => 'v1', 'routes' => $expected]);
-});
-
 it('hands back chrome with a fragment', function () {
     $this->server->chrome = ['nav_bar' => ['title' => 'Promo']];
 
