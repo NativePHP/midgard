@@ -3,7 +3,8 @@
 namespace Native\Api\Client\Asgard;
 
 /**
- * One call to an Asgard server: a render, or the route list.
+ * One call to an Asgard server: a render, a `#[Server]` method, or the
+ * route list.
  *
  * Runs on the background PHP lane of an AsyncTask, so it is static and takes
  * and returns plain arrays. The session it uses is shared with every other
@@ -19,6 +20,18 @@ class RenderCall
     public static function send(array $config, array $body): array
     {
         return AsgardClient::make($config)->render($body);
+    }
+
+    /**
+     * Run a `#[Server]` method on the server.
+     *
+     * @param  array{url: string, path: string, key: string, timeout: float, store: ?string}  $config
+     * @param  array<string, mixed>  $body  The ServerRequest wire body.
+     * @return array{ok: bool, status: int, delta?: array<string, mixed>, fragments?: array<string, mixed>, error?: string}
+     */
+    public static function serverMethod(array $config, array $body): array
+    {
+        return AsgardClient::make($config)->callMethod($body);
     }
 
     /**

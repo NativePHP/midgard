@@ -16,10 +16,11 @@ use Psr\Http\Message\ResponseInterface;
 /**
  * The device's half of Asgard sessions, signatures and encryption (§6, §7).
  *
- * render() and routes() do the network calls: each handshakes when there is
- * no session, seals the request, and verifies and decrypts the answer. A 419
- * gets one re-handshake and one retry. A 403 is never retried. Anything that
- * fails comes back as ['ok' => false], never as a fragment or a route list.
+ * render(), callMethod() and routes() do the network calls: each handshakes
+ * when there is no session, seals the request, and verifies and decrypts the
+ * answer. A 419 gets one re-handshake and one retry. A 403 is never retried.
+ * Anything that fails comes back as ['ok' => false], never as a fragment, a
+ * delta or a route list.
  *
  * sealStream() only signs and encrypts, so it is safe on the UI lane.
  */
@@ -32,7 +33,7 @@ class AsgardClient
         protected string $path,
         protected string $key,
         protected SessionCache $sessions,
-        protected float $timeout = 10,
+        protected float $timeout = 20,
         protected ?ClientInterface $http = null,
     ) {}
 
@@ -48,7 +49,7 @@ class AsgardClient
             $config['path'],
             $config['key'],
             new SessionCache(Cache::store($config['store'] ?? null), SessionCache::keyFor($config['url'], $config['key'])),
-            (float) ($config['timeout'] ?? 10),
+            (float) ($config['timeout'] ?? 20),
             $http,
         );
     }
@@ -149,6 +150,38 @@ class AsgardClient
             }
 
             $answer['chrome'] = $json['chrome'];
+        }
+
+        return $answer;
+    }
+
+    /**
+     * One `#[Server]` method call (protocol §10.5). Unsafe, so it carries a
+     * nonce. The answer is the props the server changed. Fragments come back
+     * too when the server sent an object of them, for the device to check.
+     *
+     * @param  array<string, mixed>  $body  The wire body, protocol member included.
+     * @return array{ok: bool, status: int, delta?: array<string, mixed>, fragments?: array<string, mixed>, error?: string}
+     */
+    public function callMethod(array $body): array
+    {
+        $result = $this->call('call', $body, true);
+
+        if (! $result['ok']) {
+            return $result;
+        }
+
+        $delta = $result['json']['delta'] ?? null;
+
+        if (! is_array($delta) || ($delta !== [] && array_is_list($delta))) {
+            return ['ok' => false, 'status' => $result['status'], 'error' => 'bad response'];
+        }
+
+        $answer = ['ok' => true, 'status' => $result['status'], 'delta' => $delta];
+
+        $fragments = $result['json']['fragments'] ?? null;
+        if (is_array($fragments) && $fragments !== [] && ! array_is_list($fragments)) {
+            $answer['fragments'] = $fragments;
         }
 
         return $answer;

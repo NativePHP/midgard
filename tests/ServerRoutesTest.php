@@ -1,5 +1,6 @@
 <?php
 
+use Illuminate\Contracts\Cache\Repository;
 use Illuminate\Support\Facades\Cache;
 use Native\Api\Client\Asgard\AsgardClient;
 use Native\Api\Client\Asgard\ServerRoutes;
@@ -161,7 +162,7 @@ it('keys the cache per server and Asgard key', function () {
 });
 
 it('boots with no server routes when the cache cannot be read', function () {
-    $broken = Mockery::mock(Illuminate\Contracts\Cache\Repository::class);
+    $broken = Mockery::mock(Repository::class);
     $broken->shouldReceive('get')->andThrow(new RuntimeException('no database yet'));
     $registered = 0;
 
@@ -175,7 +176,7 @@ it('boots with no server routes when the cache cannot be read', function () {
 });
 
 it('still registers a fetched list when the cache cannot be written', function () {
-    $broken = Mockery::mock(Illuminate\Contracts\Cache\Repository::class);
+    $broken = Mockery::mock(Repository::class);
     $broken->shouldReceive('get')->andReturn(null);
     $broken->shouldReceive('forever')->andThrow(new RuntimeException('read-only'));
     $got = null;

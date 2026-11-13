@@ -9,11 +9,13 @@ return [
     'asgard' => [
         'url' => env('ASGARD_SERVER_URL'),
         'path' => env('ASGARD_PATH', '_asgard'),
-        // Seconds one HTTP call may take. Keep it under the device's own
-        // timeouts (nativephp.asgard.screen_timeout and action_timeout, 15 by
-        // default), so a slow server reads as a network failure rather than
-        // a timeout with the call still running.
-        'timeout' => (float) env('ASGARD_TIMEOUT', 10),
+        // Seconds one HTTP call may take, for renders, actions and #[Server]
+        // calls alike. Keep it longer than the device's own timeouts
+        // (nativephp.asgard.screen_timeout and action_timeout, 15 by
+        // default). The device timeout is the one that should fire first,
+        // so a slow server reads as a timeout. If this one fired first, the
+        // same slow server would read as a network failure.
+        'timeout' => (float) env('ASGARD_TIMEOUT', 20),
 
         // The app's Asgard key: the same value as the server's ASGARD_KEY.
         // It is a public identifier, not a secret. Without it, regions keep

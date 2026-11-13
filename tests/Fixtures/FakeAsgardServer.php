@@ -49,6 +49,9 @@ class FakeAsgardServer
 
     public string $routesVersion = 'v1';
 
+    /** The delta a #[Server] call answers with. */
+    public array $delta = ['roll' => 4];
+
     /** Answer with exactly this plaintext instead of a fragment message. */
     public ?string $plaintext = null;
 
@@ -107,9 +110,11 @@ class FakeAsgardServer
             return new Response($this->refuseWith, ['Content-Type' => 'application/json'], '{"error":"refused"}');
         }
 
-        $message = str_ends_with($path, '/routes')
-            ? ['protocol' => 1, 'version' => $this->routesVersion, 'routes' => $this->routes]
-            : ['protocol' => 1, 'region' => 'r', 'fragment' => $this->fragment] + ($this->chrome !== null ? ['chrome' => $this->chrome] : []);
+        $message = match (true) {
+            str_ends_with($path, '/routes') => ['protocol' => 1, 'version' => $this->routesVersion, 'routes' => $this->routes],
+            str_ends_with($path, '/call') => ['protocol' => 1, 'delta' => (object) $this->delta],
+            default => ['protocol' => 1, 'region' => 'r', 'fragment' => $this->fragment] + ($this->chrome !== null ? ['chrome' => $this->chrome] : []),
+        };
 
         $plaintext = $this->plaintext ?? json_encode($message);
         $sealed = Wire::sealResponse($this->sessions[$session], $session, 200, $plaintext, $opened['signature'], null, null, $this->compress);

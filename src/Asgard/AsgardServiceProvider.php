@@ -11,14 +11,16 @@ use Native\Api\Client\Asgard\Events\StreamMessage;
 use Native\Api\Client\Asgard\Events\StreamOpened;
 use Native\Mobile\AsyncTask;
 use Native\Mobile\Edge\Asgard\Contracts\FragmentSource;
+use Native\Mobile\Edge\Asgard\Contracts\ServerTransport;
 use Native\Mobile\Edge\Asgard\ServerRegion;
 use Native\Mobile\Edge\NativeRouter;
 use Native\Mobile\Events\Screen\ScreenMounted;
 
 /**
- * Binds the HTTP fragment source when the app runs nativephp/mobile and has
- * an Asgard server and key configured. Otherwise it does nothing, and
- * mobile's own null source keeps every region on its placeholder.
+ * Binds the HTTP fragment source and the HTTP `#[Server]` transport when the
+ * app runs nativephp/mobile and has an Asgard server and key configured.
+ * Otherwise it does nothing: mobile's own null source keeps every region on
+ * its placeholder, and its null transport fails every `#[Server]` call.
  *
  * With a server configured it also registers the server's screen routes:
  * the cached list at boot, and a fresh one fetched in the background once
@@ -72,6 +74,11 @@ class AsgardServiceProvider extends ServiceProvider
             $config,
             $app->bound(RegionStreams::class) ? $app->make(RegionStreams::class) : null,
         ));
+
+        // #[Server] methods go to the same server, on AsyncTask lanes too.
+        if (interface_exists(ServerTransport::class)) {
+            $this->app->singleton(ServerTransport::class, fn () => new HttpServerTransport($config));
+        }
     }
 
     public function boot(): void
@@ -123,7 +130,7 @@ class AsgardServiceProvider extends ServiceProvider
             'url' => $url,
             'path' => (string) config('midgard.asgard.path', '_asgard'),
             'key' => $key,
-            'timeout' => (float) config('midgard.asgard.timeout', 10),
+            'timeout' => (float) config('midgard.asgard.timeout', 20),
             'store' => is_string($store) && $store !== '' ? $store : null,
         ];
     }

@@ -2,6 +2,7 @@
 
 use Laravel\SerializableClosure\SerializableClosure;
 use Native\Api\Client\Asgard\AsgardServiceProvider;
+use Native\Api\Client\Asgard\HttpServerTransport;
 
 // A serialized closure is found by the line it starts on. Work written
 // inline next to the closure that dispatches it shipped that outer closure
@@ -16,3 +17,11 @@ it('ships the work closure, not the dispatching one, to the lane', function (str
     ['routesWork', 'RenderCall::routes($config)'],
     ['handshakeWork', 'RenderCall::handshake($config)'],
 ]);
+
+it('ships the #[Server] call to the lane, not the send() around it', function () {
+    $work = HttpServerTransport::callWork(['url' => 'https://example.test'], ['method' => 'roll']);
+
+    $code = serialize(new SerializableClosure($work));
+
+    expect($code)->toContain('RenderCall::serverMethod($config, $body)')->not->toContain('->finished(');
+});
