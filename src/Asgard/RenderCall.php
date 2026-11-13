@@ -38,7 +38,7 @@ class RenderCall
      * Fetch the server's screen routes, handshaking first when needed.
      *
      * @param  array{url: string, path: string, key: string, timeout: float, store: ?string}  $config
-     * @return array{ok: bool, status: int, routes?: list<array{uri: string, screen: string}>, version?: string, error?: string}
+     * @return array{ok: bool, status: int, routes?: list<array{uri: string, screen: string, title?: string}>, version?: string, error?: string}
      */
     public static function routes(array $config): array
     {
