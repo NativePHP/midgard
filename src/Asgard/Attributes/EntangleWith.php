@@ -19,8 +19,8 @@ use Native\Api\Client\Asgard\ComponentAddress;
  * protocol, so moving or renaming the class on the client changes
  * nothing on the server.
  *
- * The address is dot notation. Each segment is lower-case letters, digits,
- * `_` and `-`, so `#[EntangleWith('order-summary')]` works. It is the
+ * The address is dot notation. Each segment starts with a lower-case
+ * letter, then letters, digits, `_` or `-`, so `#[EntangleWith('order-summary')]` works. It is the
  * same shape the server's map accepts.
  */
 #[Attribute(Attribute::TARGET_CLASS)]
@@ -29,7 +29,7 @@ class EntangleWith
     public function __construct(public string $address)
     {
         if (! preg_match(ComponentAddress::PATTERN, $address)) {
-            throw new InvalidArgumentException("Asgard address [{$address}] must be dot notation with segments of a-z, 0-9, _ and -.");
+            throw new InvalidArgumentException("Asgard address [{$address}] must be dot notation, each segment a lower-case letter followed by letters, digits, _ or -.");
         }
     }
 }

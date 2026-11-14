@@ -53,7 +53,7 @@ it('falls back to the class name without the attribute', function () {
 
 it('refuses an address that is not dot notation of lower-case segments', function (string $address) {
     new EntangleWith($address);
-})->with(['', 'Home', 'app\\home', 'home.', '.home', 'home..x', 'home screen', 'home/screen', 'Home-Screen'])
+})->with(['', 'Home', 'app\\home', 'home.', '.home', 'home..x', 'home screen', 'home/screen', 'Home-Screen', '-home', '1home', 'home.-x', 'home._x'])
     ->throws(InvalidArgumentException::class);
 
 it('takes hyphens in an address', function (string $address) {

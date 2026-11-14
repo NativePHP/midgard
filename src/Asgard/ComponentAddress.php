@@ -25,8 +25,8 @@ use ReflectionClass;
  */
 class ComponentAddress
 {
-    /** What an address looks like: dot notation, each segment lower-case letters, digits, `_` and `-`. */
-    public const PATTERN = '/^[a-z0-9_-]+(\.[a-z0-9_-]+)*$/D';
+    /** What an address looks like: dot notation, each segment a lower-case letter, then letters, digits, `_` or `-` (Asgard protocol §4). */
+    public const PATTERN = '/^[a-z][a-z0-9_-]*(\.[a-z][a-z0-9_-]*)*$/D';
 
     /** @var array<class-string, string> */
     protected static array $named = [];
