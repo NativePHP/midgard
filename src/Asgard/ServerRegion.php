@@ -1490,9 +1490,8 @@ class ServerRegion
     }
 
     /**
-     * A component's public props, kept to what JSON can carry (see
-     * RegionRequest). An uninitialised typed prop is skipped rather than
-     * read, as ServerMethods does.
+     * The state a component sends (ComponentState), kept to what JSON can
+     * carry (see RegionRequest).
      */
     public static function stateOf(NativeComponent $component): array
     {
@@ -1500,21 +1499,7 @@ class ServerRegion
             return array_filter($component->asgardState(), static::jsonSafe(...));
         }
 
-        $state = [];
-
-        foreach ((new \ReflectionClass($component))->getProperties(\ReflectionProperty::IS_PUBLIC) as $prop) {
-            if ($prop->isStatic() || ! $prop->isInitialized($component)) {
-                continue;
-            }
-
-            $value = $prop->getValue($component);
-
-            if (static::jsonSafe($value)) {
-                $state[$prop->getName()] = $value;
-            }
-        }
-
-        return $state;
+        return array_filter(ComponentState::of($component), static::jsonSafe(...));
     }
 
     // ── Server screens (§12) ─────────────────────────

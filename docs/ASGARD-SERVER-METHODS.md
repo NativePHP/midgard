@@ -147,6 +147,40 @@ Other components are only named, in `refresh`:
 
 Both are left out when the method asked for nothing.
 
+### 2.1 Keeping a prop on the device with `#[LocalOnly]`
+
+Every public prop is state, and state goes to the server with every region
+request, server action, `#[Server]` call and upload, and into the push stream
+subscriptions. Mark a public prop `#[LocalOnly]` to keep it on the phone:
+
+```php
+use Native\Api\Client\Asgard\Attributes\LocalOnly;
+
+class Compose extends NativeComponent
+{
+    use UsesServer;
+
+    public string $to = '';
+
+    // Bound to the text field, but not sent until the user taps Send.
+    #[LocalOnly]
+    public string $draft = '';
+
+    // The app's own token for another service. The server never sees it.
+    #[LocalOnly]
+    public ?string $token = null;
+}
+```
+
+The server cannot set it either. A delta that names a local-only prop is
+ignored on the device and logged under debug, and the rest of the delta still
+applies. Since it is not state, changing it does not change what a region was
+fetched for or the push subscription it sits under.
+
+A subclass keeps its parent's local-only props, even one it declares again.
+Private and protected props are never sent anyway, so the attribute is only
+for public ones.
+
 ## 3. The request runs off the UI thread
 
 PHP on device runs a blocking runloop: it waits on `nativephp_element_wait_event()`,

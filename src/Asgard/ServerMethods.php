@@ -724,10 +724,22 @@ class ServerMethods
     {
         $applied = [];
         $refused = [];
-        $writable = static::publicProperties($component);
+        $writable = ComponentState::properties($component);
 
         foreach ($delta as $prop => $value) {
             $prop = (string) $prop;
+
+            // The device keeps a #[LocalOnly] prop to itself, so the
+            // server never saw it and has no say over it.
+            if (ComponentState::isLocalOnly($component, $prop)) {
+                NativeRouter::debugLog(
+                    'Asgard: delta prop ['.$prop.'] is #[LocalOnly] on '.$component::class.' — ignored.'
+                );
+
+                $refused[$prop] = $value;
+
+                continue;
+            }
 
             // Drift: the server changed a prop this half does not have.
             // Silently ignored the way §5.3 ignores a field present on
@@ -813,42 +825,10 @@ class ServerMethods
         $bound($response);
     }
 
-    /**
-     * The component's public props — the state a request carries (§2).
-     *
-     * Public only, and that is a boundary rather than a convenience: a
-     * delta can therefore never reach the `native*` internals a component
-     * keeps protected, whatever a server puts in it.
-     *
-     * An uninitialised typed prop is left out rather than read.
-     * `ReflectionProperty::getValue()` throws on one, and a screen with
-     * `public User $user;` filled in by mount() is an ordinary shape.
-     */
+    /** The state a request carries (§2), as ComponentState gathers it. */
     protected static function snapshot(NativeComponent $component): array
     {
-        $state = [];
-
-        foreach (static::publicProperties($component) as $name => $prop) {
-            if ($prop->isInitialized($component)) {
-                $state[$name] = $prop->getValue($component);
-            }
-        }
-
-        return $state;
-    }
-
-    /** @return array<string, \ReflectionProperty> */
-    protected static function publicProperties(NativeComponent $component): array
-    {
-        $props = [];
-
-        foreach ((new \ReflectionClass($component))->getProperties(\ReflectionProperty::IS_PUBLIC) as $prop) {
-            if (! $prop->isStatic()) {
-                $props[$prop->getName()] = $prop;
-            }
-        }
-
-        return $props;
+        return ComponentState::of($component);
     }
 
     /** @return array<string, string> */
