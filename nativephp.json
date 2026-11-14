@@ -22,7 +22,12 @@
     "permissions": [
       "android.permission.INTERNET"
     ],
-    "min_version": 26
+    "min_version": 26,
+    "dependencies": {
+      "implementation": [
+        "com.squareup.okhttp3:okhttp:4.12.0"
+      ]
+    }
   },
   "ios": {
     "info_plist": {

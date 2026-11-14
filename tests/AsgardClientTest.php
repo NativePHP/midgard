@@ -114,7 +114,7 @@ it('never hands back a fragment whose response does not verify', function (Closu
         unset($s['headers']['signature']);
 
         return $s;
-    }, 'unsigned response'],
+    }, 'the answer is not signed'],
 ]);
 
 it('refuses a response replayed from another request', function () {

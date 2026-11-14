@@ -4,8 +4,11 @@ namespace Native\Api\Client\Tests\Fixtures;
 
 use Closure;
 use GuzzleHttp\Client;
+use GuzzleHttp\Exception\ConnectException;
 use GuzzleHttp\HandlerStack;
 use GuzzleHttp\Promise\FulfilledPromise;
+use GuzzleHttp\Promise\PromiseInterface;
+use GuzzleHttp\Promise\RejectedPromise;
 use GuzzleHttp\Psr7\Response;
 use Native\Api\Client\Asgard\Security\Base64Url;
 use Native\Api\Client\Asgard\Security\Ecdh;
@@ -24,7 +27,7 @@ class FakeAsgardServer
     /** @var array<string, SessionKeys> */
     public array $sessions = [];
 
-    /** @var list<array{path: string, session: ?string, nonce: ?string, body: ?array}> */
+    /** @var list<array{path: string, method: string, override: ?string, session: ?string, nonce: ?string, body: ?array}> */
     public array $requests = [];
 
     public int $handshakes = 0;
@@ -58,6 +61,16 @@ class FakeAsgardServer
     /** Answer with exactly this plaintext instead of a fragment message. */
     public ?string $plaintext = null;
 
+    /**
+     * What something in front of the server does to a real QUERY: null lets
+     * it through, an int answers with that status and a firewall's page,
+     * 'network' drops the connection.
+     */
+    public int|string|null $blockQuery = null;
+
+    /** The same for the POST form. */
+    public int|string|null $blockPost = null;
+
     /** Every handshake body, in order. */
     public array $handshakeBodies = [];
 
@@ -70,10 +83,28 @@ class FakeAsgardServer
     {
         return new Client(['handler' => HandlerStack::create(function (RequestInterface $r, array $options) {
             $this->timeouts[] = $options['timeout'] ?? null;
-            $this->methods[] = $r->getMethod();
 
-            return new FulfilledPromise($this->handle($r));
+            return $this->dispatch($r);
         }), 'http_errors' => false]);
+    }
+
+    protected function dispatch(RequestInterface $r): PromiseInterface
+    {
+        $this->methods[] = $r->getMethod();
+
+        if (! str_ends_with($r->getUri()->getPath(), '/session')) {
+            $block = $r->getMethod() === 'QUERY' ? $this->blockQuery : ($r->getMethod() === 'POST' ? $this->blockPost : null);
+
+            if ($block === 'network') {
+                return new RejectedPromise(new ConnectException('Connection reset', $r));
+            }
+
+            if (is_int($block)) {
+                return new FulfilledPromise(new Response($block, ['Content-Type' => 'text/html'], '<html><body>Request blocked</body></html>'));
+            }
+        }
+
+        return new FulfilledPromise($this->handle($r));
     }
 
     public function forgetSessions(): void
@@ -82,11 +113,11 @@ class FakeAsgardServer
     }
 
     /** The stream body a sealed stream request carried, as the server would read it. */
-    public function openStream(string $url, array $headers, string $body): array
+    public function openStream(string $url, array $headers, string $body, string $method = 'POST'): array
     {
         $session = $headers['asgard-session-id'];
         $parts = parse_url($url);
-        $opened = Wire::openRequest($this->sessions[$session], $session, 'POST', $parts['host'], $parts['path'], $headers, $body, time());
+        $opened = Wire::openRequest($this->sessions[$session], $session, $method, $parts['host'], $parts['path'], $headers, $body, time());
 
         return ['body' => json_decode($opened['body'], true), 'raw' => $opened['body'], 'signature' => $opened['signature'], 'session' => $session];
     }
@@ -100,7 +131,13 @@ class FakeAsgardServer
         }
 
         $session = $request->getHeaderLine('Asgard-Session-Id');
-        $this->requests[] = ['path' => $path, 'session' => $session, 'nonce' => null, 'body' => null];
+        $override = $request->hasHeader('X-Asgard-Method') ? $request->getHeaderLine('X-Asgard-Method') : null;
+        $this->requests[] = ['path' => $path, 'method' => $request->getMethod(), 'override' => $override, 'session' => $session, 'nonce' => null, 'body' => null];
+
+        // Every endpoint but the handshake takes QUERY, or POST with the header (§8).
+        if (! ($request->getMethod() === 'QUERY' && $override === null) && ! ($request->getMethod() === 'POST' && $override === 'QUERY')) {
+            return new Response(405, ['Content-Type' => 'application/json'], '{"error":"method_not_allowed"}');
+        }
 
         if (! isset($this->sessions[$session])) {
             return new Response(419, ['Content-Type' => 'application/json'], '{"error":"session_expired"}');
@@ -128,7 +165,12 @@ class FakeAsgardServer
         }
 
         if ($this->refuseWith !== null) {
-            return new Response($this->refuseWith, ['Content-Type' => 'application/json'], '{"error":"refused"}');
+            // A listed early rejection carries the body §7.3 gives it.
+            $error = match ($this->refuseWith) {
+                403 => 'forbidden', 405 => 'method_not_allowed', 413 => 'too_large', 419 => 'session_expired', default => 'refused',
+            };
+
+            return new Response($this->refuseWith, ['Content-Type' => 'application/json'], json_encode(['error' => $error]));
         }
 
         $message = match (true) {

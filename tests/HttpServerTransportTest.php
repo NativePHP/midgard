@@ -110,7 +110,7 @@ it('reports a refused call with its status', function () {
     $this->server->refuseWith = 503;
 
     expect($this->client->callMethod(HttpServerTransport::wireBody(serverRequest())))
-        ->toBe(['ok' => false, 'status' => 503, 'error' => 'unsigned response']);
+        ->toBe(['ok' => false, 'status' => 503, 'error' => 'response failed verification: the answer is not signed']);
 });
 
 // ── The wire body ───────────────────────────────────

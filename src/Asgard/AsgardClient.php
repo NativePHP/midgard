@@ -23,6 +23,13 @@ use Psr\Http\Message\ResponseInterface;
  * Anything that fails comes back as ['ok' => false], never as a fragment, a
  * delta or a route list.
  *
+ * The handshake is always a plain POST to {base}/session. Every other
+ * request goes as real QUERY or as POST plus `X-Asgard-Method: QUERY`
+ * (§8). Which one is found by probing: until TransportMemory knows, a
+ * request goes as QUERY, and if what comes back is not an Asgard answer it
+ * is signed again and sent as POST. The form that got an Asgard answer is
+ * remembered for the installation.
+ *
  * sealStream() only signs and encrypts, so it is safe on the UI lane.
  */
 class AsgardClient
@@ -31,6 +38,16 @@ class AsgardClient
 
     /** At most this many regions, or hints, in one answer. */
     public const MAX_PARTS = 16;
+
+    /** Unsigned answers a server may give before it checks a request (§7.3), by status. */
+    public const EARLY_REJECTIONS = [
+        403 => ['forbidden', 'nonce_required'],
+        405 => ['method_not_allowed'],
+        413 => ['too_large'],
+        419 => ['session_expired'],
+    ];
+
+    protected TransportMemory $transport;
 
     /** @var list<string> */
     protected array $elements;
@@ -45,8 +62,10 @@ class AsgardClient
         protected float $timeout = 20,
         protected ?ClientInterface $http = null,
         protected float $uploadTimeout = 150,
+        ?TransportMemory $transport = null,
         ?array $elements = null,
     ) {
+        $this->transport = $transport ?? new TransportMemory(Cache::store('array'), TransportMemory::keyFor($base));
         $this->elements = $elements ?? self::advertisedElements();
     }
 
@@ -57,13 +76,16 @@ class AsgardClient
      */
     public static function make(array $config, ?ClientInterface $http = null): self
     {
+        $store = Cache::store($config['store'] ?? null);
+
         return new self(
             $config['base'],
             $config['key'],
-            new SessionCache(Cache::store($config['store'] ?? null), SessionCache::keyFor($config['base'], $config['key'])),
+            new SessionCache($store, SessionCache::keyFor($config['base'], $config['key'])),
             (float) ($config['timeout'] ?? 20),
             $http,
             (float) ($config['upload_timeout'] ?? 150),
+            new TransportMemory($store, TransportMemory::keyFor($config['base'])),
             $config['elements'] ?? null,
         );
     }
@@ -99,6 +121,12 @@ class AsgardClient
     public function elements(): array
     {
         return $this->elements;
+    }
+
+    /** Which request form this installation uses, or null while it is still to be found. */
+    public function transport(): ?string
+    {
+        return $this->transport->get();
     }
 
     /** The stored session, or null when there is none or it is about to lapse. */
@@ -466,41 +494,101 @@ class AsgardClient
     /**
      * Sign and encrypt a request to the stream endpoint. No network.
      *
-     * @return array{headers: array<string, string>, body: string, signature: string}
+     * It goes in the form this installation remembered (§8). The stream is
+     * opened by native code, which cannot fall back, and only for regions
+     * that already got an answer, so the form is normally known by then.
+     * When it is not, the stream goes as POST plus the header, which every
+     * Asgard server accepts, and nothing is remembered.
+     *
+     * @return array{method: string, headers: array<string, string>, body: string, signature: string}
      */
     public function sealStream(Session $session, string $plaintext): array
     {
-        return $this->seal($session, $this->endpoint('stream'), $plaintext, null);
+        $form = $this->transport->get() ?? TransportMemory::POST;
+
+        return ['method' => $form] + $this->seal($session, $this->endpoint('stream'), $plaintext, null, $form);
     }
 
-    /** @return array{ok: true, status: int, json: array<string, mixed>}|array{ok: false, status: int, error: string} */
+    /**
+     * One request, in the remembered form, or probed when there is none
+     * yet (§8): QUERY first, then POST plus the header when QUERY did not
+     * get an Asgard answer. The form that did is remembered. A network
+     * failure remembers nothing and does not fall back, so the next request
+     * tries QUERY again. So does a request neither form got an Asgard answer
+     * for, which fails as the POST attempt did.
+     *
+     * @return array{ok: true, status: int, json: array<string, mixed>}|array{ok: false, status: int, error: string}
+     */
     protected function attempt(Session $session, string $name, string $plaintext, bool $action, ?float $timeout = null): array
     {
+        $known = $this->transport->get();
+
+        [$asgard, $result] = $this->exchange($session, $name, $plaintext, $action, $timeout, $known ?? TransportMemory::QUERY);
+
+        if ($known !== null || $asgard === null) {
+            return $result;
+        }
+
+        if ($asgard) {
+            $this->transport->remember(TransportMemory::QUERY);
+
+            return $result;
+        }
+
+        // Signed afresh, with a fresh nonce: the method is a covered component.
+        [$asgard, $result] = $this->exchange($session, $name, $plaintext, $action, $timeout, TransportMemory::POST);
+
+        if ($asgard === true) {
+            $this->transport->remember(TransportMemory::POST);
+        }
+
+        return $result;
+    }
+
+    /**
+     * Send one sealed request in one form. Returns whether the answer was an
+     * Asgard answer (null when nothing came back), and the result.
+     *
+     * An Asgard answer is a response that verifies as §7.3 says, or one of
+     * the unsigned early rejections listed there other than 405, with the
+     * body that table gives for its status. A firewall's 403 page is not
+     * one, so it does not make a blocked QUERY look like it worked.
+     *
+     * @return array{0: ?bool, 1: array{ok: true, status: int, json: array<string, mixed>}|array{ok: false, status: int, error: string}}
+     */
+    protected function exchange(Session $session, string $name, string $plaintext, bool $action, ?float $timeout, string $form): array
+    {
         $endpoint = $this->endpoint($name);
-        $sealed = $this->seal($session, $endpoint, $plaintext, $action ? Base64Url::encode(random_bytes(16)) : null);
+        $sealed = $this->seal($session, $endpoint, $plaintext, $action ? Base64Url::encode(random_bytes(16)) : null, $form);
 
         try {
-            $response = $this->http()->request('POST', $endpoint, [
+            $response = $this->http()->request($form, $endpoint, [
                 'body' => $sealed['body'],
                 'headers' => $sealed['headers'] + ['accept' => 'application/json'],
             ] + ($timeout === null ? [] : ['timeout' => $timeout]));
         } catch (GuzzleException $e) {
-            return ['ok' => false, 'status' => 0, 'error' => $e->getMessage()];
+            return [null, ['ok' => false, 'status' => 0, 'error' => $e->getMessage()]];
         }
 
         $status = $response->getStatusCode();
-
-        if ($status === 419) {
-            $this->sessions->forget($session->id);
-
-            return ['ok' => false, 'status' => 419, 'error' => 'session_expired'];
-        }
-
         $headers = self::headers($response);
 
         if (! isset($headers['signature'])) {
-            // 403, 405, a proxy's error page: nothing here can be trusted beyond the status.
-            return ['ok' => false, 'status' => $status, 'error' => 'unsigned response'];
+            // Nothing here can be trusted beyond the status (§7.3).
+            $early = self::isEarlyRejection($status, (string) $response->getBody());
+
+            if ($status === 419) {
+                $this->sessions->forget($session->id);
+
+                return [$early, ['ok' => false, 'status' => 419, 'error' => 'session_expired']];
+            }
+
+            if (isset(self::EARLY_REJECTIONS[$status])) {
+                return [$early && $status !== 405, ['ok' => false, 'status' => $status, 'error' => 'unsigned response']];
+            }
+
+            // Any other unsigned status is a failure like a bad signature.
+            return [false, ['ok' => false, 'status' => $status, 'error' => 'response failed verification: the answer is not signed']];
         }
 
         try {
@@ -509,20 +597,29 @@ class AsgardClient
                 true,
             );
         } catch (SecurityException $e) {
-            return ['ok' => false, 'status' => $status, 'error' => 'response failed verification: '.$e->getMessage()];
+            return [false, ['ok' => false, 'status' => $status, 'error' => 'response failed verification: '.$e->getMessage()]];
         }
 
         $this->sessions->touch($session->id);
 
         if ($status !== 200 || ! is_array($json)) {
-            return ['ok' => false, 'status' => $status, 'error' => is_array($json) ? (string) ($json['error'] ?? 'bad response') : 'response was not JSON'];
+            return [true, ['ok' => false, 'status' => $status, 'error' => is_array($json) ? (string) ($json['error'] ?? 'bad response') : 'response was not JSON']];
         }
 
-        return ['ok' => true, 'status' => $status, 'json' => $json];
+        return [true, ['ok' => true, 'status' => $status, 'json' => $json]];
+    }
+
+    /** Whether an unsigned answer is one of §7.3's early rejections: a listed status with its listed body. */
+    public static function isEarlyRejection(int $status, string $body): bool
+    {
+        $json = json_decode($body, true);
+
+        return isset(self::EARLY_REJECTIONS[$status]) && is_array($json)
+            && in_array($json['error'] ?? null, self::EARLY_REJECTIONS[$status], true);
     }
 
     /** @return array{headers: array<string, string>, body: string, signature: string} */
-    protected function seal(Session $session, string $endpoint, string $plaintext, ?string $nonce): array
+    protected function seal(Session $session, string $endpoint, string $plaintext, ?string $nonce, string $form): array
     {
         $parts = parse_url($endpoint);
         $scheme = strtolower($parts['scheme'] ?? 'https');
@@ -532,16 +629,16 @@ class AsgardClient
             $authority .= ':'.$parts['port'];
         }
 
-        // Sent as POST plus X-Asgard-Method: QUERY (§8), which gets through
-        // every proxy and WAF. Negotiating real QUERY is not built yet.
+        // Real QUERY, or POST with the verb it means in a header that the
+        // signature covers too (§7.3, §8).
         return Wire::sealRequest(
             $session->keys,
             $session->id,
-            'POST',
+            $form,
             $authority,
             $parts['path'] ?? '/',
             $plaintext,
-            ['x-asgard-method' => 'QUERY'],
+            $form === TransportMemory::POST ? ['x-asgard-method' => 'QUERY'] : [],
             time(),
             $nonce,
         );

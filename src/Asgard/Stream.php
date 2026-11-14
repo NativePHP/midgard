@@ -29,15 +29,25 @@ class Stream
     /**
      * Open (or replace) the stream with this id.
      *
-     * Without a body the request is a GET. With one it is a POST, and the
-     * body goes as given: any bytes, so it crosses the bridge in base64.
-     * The caller sets Content-Type.
+     * Without a body the request is a GET. With one it is a POST unless
+     * `$method` says QUERY (protocol §8), and the body goes as given: any
+     * bytes, so it crosses the bridge in base64. The caller sets
+     * Content-Type.
      *
      * @param  array<string, string>  $headers
+     * @param  'POST'|'QUERY'|null  $method  The method for a request with a body. POST by default.
      */
-    public static function open(string $id, string $url, array $headers = [], ?string $body = null): void
+    public static function open(string $id, string $url, array $headers = [], ?string $body = null, ?string $method = null): void
     {
-        $method = $body === null ? 'GET' : 'POST';
+        if ($body === null) {
+            $method = 'GET';
+        } else {
+            $method = strtoupper($method ?? 'POST');
+
+            if (! in_array($method, ['POST', 'QUERY'], true)) {
+                throw new \InvalidArgumentException("A stream with a body is sent as POST or QUERY, not [{$method}].");
+            }
+        }
 
         if (static::$fake !== null) {
             static::$fake->recordOpen($id, $url, $method, $headers, $body);

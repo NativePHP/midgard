@@ -8,10 +8,15 @@ import androidx.fragment.app.FragmentActivity
 import com.nativephp.mobile.bridge.BridgeFunction
 import com.nativephp.mobile.bridge.BridgeResponse
 import com.nativephp.mobile.ui.nativerender.NativeElementBridge
+import okhttp3.Call
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.Response
 import org.json.JSONObject
-import java.net.HttpURLConnection
-import java.net.URL
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.TimeUnit
 
 // Native SSE transport for the Asgard plugin.
 //
@@ -19,6 +24,10 @@ import java.util.concurrent.ConcurrentHashMap
 // below). The connection lives here, on a background thread per stream, so
 // PHP never blocks on it. Everything that happens on a stream goes back to
 // PHP as a native event. iOS twin: resources/ios/AsgardStream.swift.
+//
+// The request goes through OkHttp, not HttpURLConnection, because the stream
+// may be opened with the QUERY method (Asgard protocol §8), and
+// HttpURLConnection refuses any method outside its fixed list.
 
 object AsgardStreamEvents {
     const val MESSAGE = "Native\\Api\\Client\\Asgard\\Events\\StreamMessage"
@@ -36,6 +45,18 @@ object AsgardStreamManager {
 
     private val sessions = ConcurrentHashMap<String, AsgardStreamSession>()
     private val mainHandler = Handler(Looper.getMainLooper())
+
+    /** Shared, so streams reuse one connection pool. */
+    val http: OkHttpClient by lazy {
+        OkHttpClient.Builder()
+            .connectTimeout(30, TimeUnit.SECONDS)
+            // Idle timeout: a stream that goes silent this long is treated as dropped.
+            .readTimeout(300, TimeUnit.SECONDS)
+            .callTimeout(0, TimeUnit.MILLISECONDS)
+            .followRedirects(true)
+            .retryOnConnectionFailure(false)
+            .build()
+    }
 
     /**
      * Send an event to PHP. Posted to the main thread so events from every
@@ -115,7 +136,7 @@ class AsgardStreamSession(
     private var stopped = false
 
     @Volatile
-    private var connection: HttpURLConnection? = null
+    private var call: Call? = null
 
     private var thread: Thread? = null
 
@@ -150,8 +171,8 @@ class AsgardStreamSession(
 
     fun stop() {
         stopped = true
-        // Disconnecting from another thread is how a blocked read is cancelled.
-        connection?.disconnect()
+        // Cancelling from another thread is how a blocked read is cancelled.
+        call?.cancel()
         thread?.interrupt()
     }
 
@@ -167,51 +188,55 @@ class AsgardStreamSession(
         var status: Int? = null
 
         try {
-            val conn = URL(url).openConnection() as HttpURLConnection
-            connection = conn
-
-            conn.requestMethod = method
-            conn.connectTimeout = 30_000
-            // Idle timeout: a stream that goes silent this long is treated as dropped.
-            conn.readTimeout = 300_000
-            conn.useCaches = false
-            conn.instanceFollowRedirects = true
-            conn.setRequestProperty("Accept", "text/event-stream")
-            conn.setRequestProperty("Cache-Control", "no-cache")
-            // Asking for identity turns off transparent gzip, which would hold events back.
-            conn.setRequestProperty("Accept-Encoding", "identity")
+            val builder = Request.Builder()
+                .url(url)
+                .header("Accept", "text/event-stream")
+                .header("Cache-Control", "no-cache")
+                // Asking for identity turns off transparent gzip, which would hold events back.
+                .header("Accept-Encoding", "identity")
             for ((name, value) in headers) {
-                conn.setRequestProperty(name, value)
+                builder.header(name, value)
             }
-            lastEventId?.let { conn.setRequestProperty("Last-Event-ID", it) }
+            lastEventId?.let { builder.header("Last-Event-ID", it) }
 
-            if (method == "POST" && body != null) {
-                conn.doOutput = true
-                conn.setFixedLengthStreamingMode(body.size)
-                conn.outputStream.use { it.write(body) }
+            // POST, or real QUERY (§8): both carry the body. OkHttp takes
+            // any method with a body except GET and HEAD.
+            val requestBody = if (method != "GET") {
+                (body ?: ByteArray(0)).toRequestBody(headers.entries.firstOrNull { it.key.equals("Content-Type", true) }?.value?.toMediaTypeOrNull())
+            } else {
+                null
+            }
+            builder.method(method, requestBody)
+
+            val newCall = AsgardStreamManager.http.newCall(builder.build())
+            call = newCall
+            if (stopped) {
+                newCall.cancel()
+                return
             }
 
-            val code = conn.responseCode
-            status = code
+            newCall.execute().use { response ->
+                val code = response.code
+                status = code
 
-            when (AsgardSseStatus.classify(code)) {
-                AsgardSseStatus.Action.ACCEPT -> {
-                    failures = 0
-                    emit(AsgardStreamEvents.OPENED, AsgardStreamManager.payload("id" to id))
-                    readStream(conn)
+                when (AsgardSseStatus.classify(code)) {
+                    AsgardSseStatus.Action.ACCEPT -> {
+                        failures = 0
+                        emit(AsgardStreamEvents.OPENED, AsgardStreamManager.payload("id" to id))
+                        readStream(response)
+                    }
+                    AsgardSseStatus.Action.STOP -> {
+                        fatal = true
+                        reason = "HTTP $code"
+                    }
+                    AsgardSseStatus.Action.RETRY -> reason = "HTTP $code"
                 }
-                AsgardSseStatus.Action.STOP -> {
-                    fatal = true
-                    reason = "HTTP $code"
-                }
-                AsgardSseStatus.Action.RETRY -> reason = "HTTP $code"
             }
         } catch (e: Exception) {
             if (stopped) return
             reason = e.message ?: e.javaClass.simpleName
         } finally {
-            connection?.disconnect()
-            connection = null
+            call = null
         }
 
         if (stopped) return
@@ -247,11 +272,12 @@ class AsgardStreamSession(
         )
     }
 
-    private fun readStream(conn: HttpURLConnection) {
+    private fun readStream(response: Response) {
         val parser = AsgardSseParser(lastEventId)
         val buffer = ByteArray(4096)
+        val source = response.body ?: return
 
-        conn.inputStream.use { stream ->
+        source.byteStream().use { stream ->
             while (!stopped) {
                 val read = stream.read(buffer)
                 if (read < 0) break
@@ -292,8 +318,8 @@ object AsgardStreamFunctions {
             }
 
             val method = ((parameters["method"] as? String) ?: "GET").uppercase()
-            if (method != "GET" && method != "POST") {
-                return BridgeResponse.error("INVALID_PARAMETERS", "method must be GET or POST")
+            if (method != "GET" && method != "POST" && method != "QUERY") {
+                return BridgeResponse.error("INVALID_PARAMETERS", "method must be GET, POST or QUERY")
             }
 
             val headers = HashMap<String, String>()

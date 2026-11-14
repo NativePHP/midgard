@@ -245,7 +245,8 @@ class RegionStreams
         $this->session = $session;
         $this->signature = $sealed['signature'];
 
-        Stream::open(self::ID, $this->client->endpoint('stream'), $sealed['headers'] + ['accept' => 'text/event-stream'], $sealed['body']);
+        // In the form this installation found works (§8), QUERY or POST.
+        Stream::open(self::ID, $this->client->endpoint('stream'), $sealed['headers'] + ['accept' => 'text/event-stream'], $sealed['body'], $sealed['method']);
     }
 
     /** Get a new session without blocking the UI lane, then open the stream with it. */

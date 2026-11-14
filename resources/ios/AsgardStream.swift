@@ -148,7 +148,8 @@ final class AsgardStreamSession: NSObject, URLSessionDataDelegate {
         if let last = lastEventId, !last.isEmpty {
             request.setValue(last, forHTTPHeaderField: "Last-Event-ID")
         }
-        if method == "POST", let body = body {
+        // POST, or real QUERY (Asgard protocol §8): both carry the body.
+        if method != "GET", let body = body {
             request.httpBody = body
         }
 
@@ -270,8 +271,8 @@ enum AsgardStreamFunctions {
             }
 
             let method = ((parameters["method"] as? String) ?? "GET").uppercased()
-            guard method == "GET" || method == "POST" else {
-                return BridgeResponse.error(code: "INVALID_PARAMETERS", message: "method must be GET or POST")
+            guard method == "GET" || method == "POST" || method == "QUERY" else {
+                return BridgeResponse.error(code: "INVALID_PARAMETERS", message: "method must be GET, POST or QUERY")
             }
 
             var headers: [String: String] = [:]
