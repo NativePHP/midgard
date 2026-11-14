@@ -7,8 +7,12 @@ return [
     | simply keep their placeholders.
     */
     'asgard' => [
-        'url' => env('ASGARD_SERVER_URL'),
-        'path' => env('ASGARD_PATH', '_asgard'),
+        // The server's base URL, {base} in the protocol (§8). Endpoints sit
+        // below it: {base}/session, {base}/render and so on. It must be
+        // https, with no query or fragment. Plain http is allowed only while
+        // app.debug is on, for a server on the developer's machine.
+        'base' => env('ASGARD_BASE_URL'),
+
         // Seconds one HTTP call may take, for renders, actions and #[Server]
         // calls alike. Keep it longer than the device's own timeouts
         // (screen_timeout and action_timeout below, 15 by default). The

@@ -9,7 +9,7 @@ use Native\Api\Client\Asgard\HttpUploadTransport;
 // inline next to the closure that dispatches it shipped that outer closure
 // to the lane instead, which then died with "too few arguments".
 it('ships the work closure, not the dispatching one, to the lane', function (string $method, string $call) {
-    $work = (new ReflectionMethod(AsgardServiceProvider::class, $method))->invoke(null, ['url' => 'https://example.test']);
+    $work = (new ReflectionMethod(AsgardServiceProvider::class, $method))->invoke(null, ['base' => 'https://example.test/_asgard']);
 
     $code = serialize(new SerializableClosure($work));
 
@@ -20,7 +20,7 @@ it('ships the work closure, not the dispatching one, to the lane', function (str
 ]);
 
 it('ships the #[Server] call to the lane, not the send() around it', function () {
-    $work = HttpServerTransport::callWork(['url' => 'https://example.test'], ['method' => 'roll']);
+    $work = HttpServerTransport::callWork(['base' => 'https://example.test/_asgard'], ['method' => 'roll']);
 
     $code = serialize(new SerializableClosure($work));
 
@@ -28,7 +28,7 @@ it('ships the #[Server] call to the lane, not the send() around it', function ()
 });
 
 it('ships the upload to the lane, not the upload() around it', function () {
-    $work = HttpUploadTransport::uploadWork(['url' => 'https://example.test'], ['method' => 'savePhoto'], '/tmp/a.jpg');
+    $work = HttpUploadTransport::uploadWork(['base' => 'https://example.test/_asgard'], ['method' => 'savePhoto'], '/tmp/a.jpg');
 
     $code = serialize(new SerializableClosure($work));
 

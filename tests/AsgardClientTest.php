@@ -10,7 +10,7 @@ use Native\Api\Client\Tests\Fixtures\FakeAsgardServer;
 beforeEach(function () {
     config()->set('cache.default', 'array');
     $this->server = new FakeAsgardServer;
-    $this->config = ['url' => 'https://asgard.test', 'path' => '_asgard', 'key' => 'test-key', 'timeout' => 5, 'store' => null];
+    $this->config = ['base' => 'https://asgard.test/_asgard', 'key' => 'test-key', 'timeout' => 5, 'store' => null];
     $this->client = AsgardClient::make($this->config, $this->server->client());
 });
 
@@ -152,10 +152,10 @@ it('treats a session as gone shortly before the server would', function () {
 
 it('signs the authority with a non-default port and without a default one', function () {
     $server = new FakeAsgardServer;
-    $client = AsgardClient::make(['url' => 'http://asgard.test:8080'] + $this->config, $server->client());
+    $client = AsgardClient::make(['base' => 'http://asgard.test:8080/_asgard'] + $this->config, $server->client());
     expect($client->render(renderBody()))->toMatchArray(['ok' => true]);
 
-    $client = AsgardClient::make(['url' => 'http://ASGARD.test:80'] + $this->config, $server->client());
+    $client = AsgardClient::make(['base' => 'http://ASGARD.test:80/_asgard'] + $this->config, $server->client());
     expect($client->render(renderBody()))->toMatchArray(['ok' => true]);
 });
 

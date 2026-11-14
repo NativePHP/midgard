@@ -20,7 +20,7 @@ beforeEach(function () {
     app('view')->addLocation(__DIR__.'/Fixtures/views');
     CallRecorderScreen::$responses = [];
 
-    $this->config = ['url' => 'https://asgard.test', 'path' => '_asgard', 'key' => 'test-key', 'timeout' => 5, 'store' => null];
+    $this->config = ['base' => 'https://asgard.test/_asgard', 'key' => 'test-key', 'timeout' => 5, 'store' => null];
     $this->server = new FakeAsgardServer;
     $this->client = AsgardClient::make($this->config, $this->server->client());
 });
@@ -274,7 +274,7 @@ it('reports a call that never came back as a network failure', function () {
 // ── Binding ─────────────────────────────────────────
 
 it('is bound as the #[Server] transport when an Asgard server is configured', function () {
-    config()->set('midgard.asgard.url', 'https://asgard.test');
+    config()->set('midgard.asgard.base', 'https://asgard.test/_asgard');
     config()->set('midgard.asgard.key', 'test-key');
 
     (new AsgardServiceProvider(app()))->register();
@@ -283,7 +283,7 @@ it('is bound as the #[Server] transport when an Asgard server is configured', fu
 });
 
 it('defaults the HTTP timeout above the device timeouts', function () {
-    config()->set('midgard.asgard.url', 'https://asgard.test');
+    config()->set('midgard.asgard.base', 'https://asgard.test/_asgard');
     config()->set('midgard.asgard.key', 'test-key');
 
     expect(AsgardServiceProvider::clientConfig()['timeout'])->toBeGreaterThan((float) config('midgard.asgard.action_timeout'));

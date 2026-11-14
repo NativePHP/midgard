@@ -16,7 +16,7 @@ beforeEach(function () {
     $this->stream = Stream::fake();
     $this->server = new FakeAsgardServer;
     $this->client = AsgardClient::make(
-        ['url' => 'https://demo.test', 'path' => '_asgard', 'key' => 'test-key', 'timeout' => 5, 'store' => null],
+        ['base' => 'https://demo.test/_asgard', 'key' => 'test-key', 'timeout' => 5, 'store' => null],
         $this->server->client(),
     );
     $this->client->handshake();

@@ -23,7 +23,7 @@ beforeEach(function () {
     $this->failures = [];
     Event::listen(ServerActionFailed::class, fn (ServerActionFailed $event) => $this->failures[] = $event);
 
-    $this->config = ['url' => 'https://asgard.test', 'path' => '_asgard', 'key' => 'test-key', 'timeout' => 5, 'upload_timeout' => 90, 'store' => null];
+    $this->config = ['base' => 'https://asgard.test/_asgard', 'key' => 'test-key', 'timeout' => 5, 'upload_timeout' => 90, 'store' => null];
     $this->server = new FakeAsgardServer;
     $this->client = AsgardClient::make($this->config, $this->server->client());
 
@@ -241,7 +241,7 @@ it('throws on state JSON cannot carry, so the send fails on the UI thread', func
 // ── Binding ─────────────────────────────────────────
 
 it('is bound as the upload transport when an Asgard server is configured', function () {
-    config()->set('midgard.asgard.url', 'https://asgard.test');
+    config()->set('midgard.asgard.base', 'https://asgard.test/_asgard');
     config()->set('midgard.asgard.key', 'test-key');
 
     (new AsgardServiceProvider(app()))->register();
@@ -250,7 +250,7 @@ it('is bound as the upload transport when an Asgard server is configured', funct
 });
 
 it('defaults the upload timeout above the device upload timeout', function () {
-    config()->set('midgard.asgard.url', 'https://asgard.test');
+    config()->set('midgard.asgard.base', 'https://asgard.test/_asgard');
     config()->set('midgard.asgard.key', 'test-key');
 
     expect(AsgardServiceProvider::clientConfig()['upload_timeout'])->toBe(150.0)

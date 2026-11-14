@@ -77,8 +77,12 @@ it('hands an action answer\'s other regions and hints to deliver', function () {
 // ── Batches ─────────────────────────────────────────
 
 it('sends a batch as one render request on a lane', function () {
+<<<<<<< HEAD
     [, $batch] = regionsInFlight();
     holdLanes();
+=======
+    $config = ['base' => 'https://a.test/_asgard', 'key' => 'k', 'timeout' => 5, 'store' => null];
+>>>>>>> 182c101 (Configure Asgard with one base URL and advertise element types)
 
     (new HttpFragmentSource($this->config))->batch($batch);
 
@@ -171,8 +175,12 @@ it('reports a render call that never came back as a network failure', function (
 });
 
 it('ships the batch render to the lane, not the batch() around it', function () {
+<<<<<<< HEAD
     [, $batch] = regionsInFlight();
     holdLanes();
+=======
+    $config = ['base' => 'https://a.test/_asgard', 'key' => 'k', 'timeout' => 5, 'store' => null];
+>>>>>>> 182c101 (Configure Asgard with one base URL and advertise element types)
 
     (new HttpFragmentSource($this->config))->batch($batch);
 

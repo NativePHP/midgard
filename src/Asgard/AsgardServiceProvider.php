@@ -83,7 +83,7 @@ class AsgardServiceProvider extends ServiceProvider
         // work offline, and are fetched again in the background.
         $this->app->singleton(ServerRoutes::class, fn () => new ServerRoutes(
             Cache::store($config['store']),
-            ServerRoutes::keyFor($config['url'], $config['key']),
+            ServerRoutes::keyFor($config['base'], $config['key']),
             static fn (array $routes) => ServerScreen::registerRoutes($routes),
             // The fetch is network, so it runs on an AsyncTask lane. Its
             // answer is taken on whichever screen is showing by then.
@@ -209,19 +209,27 @@ class AsgardServiceProvider extends ServiceProvider
     /**
      * The plain config an AsyncTask lane gets, or null when Asgard is not set up.
      *
-     * @return array{url: string, path: string, key: string, timeout: float, store: ?string}|null
+     * @return array{base: string, key: string, timeout: float, upload_timeout: float, store: ?string}|null
      */
     public static function clientConfig(): ?array
     {
-        $url = config('midgard.asgard.url');
+        $base = config('midgard.asgard.base');
         $key = config('midgard.asgard.key');
 
-        if (! is_string($url) || $url === '') {
+        if (! is_string($base) || $base === '') {
+            return null;
+        }
+
+        $problem = static::baseProblem($base, (bool) config('app.debug'));
+
+        if ($problem !== null) {
+            Log::warning("Asgard: ASGARD_BASE_URL {$problem}, so server regions stay on their placeholders.");
+
             return null;
         }
 
         if (! is_string($key) || $key === '') {
-            Log::warning('Asgard: ASGARD_SERVER_URL is set but ASGARD_KEY is not, so server regions stay on their placeholders.');
+            Log::warning('Asgard: ASGARD_BASE_URL is set but ASGARD_KEY is not, so server regions stay on their placeholders.');
 
             return null;
         }
@@ -229,13 +237,36 @@ class AsgardServiceProvider extends ServiceProvider
         $store = config('midgard.asgard.session_store');
 
         return [
-            'url' => $url,
-            'path' => (string) config('midgard.asgard.path', '_asgard'),
+            'base' => rtrim($base, '/'),
             'key' => $key,
             'timeout' => (float) config('midgard.asgard.http_timeout', 20),
             'upload_timeout' => (float) config('midgard.asgard.http_upload_timeout', 150),
             'store' => is_string($store) && $store !== '' ? $store : null,
         ];
+    }
+
+    /**
+     * Why a base URL cannot be used, or null when it can (§8): an absolute
+     * https URL with a host and no query or fragment. Plain http is allowed
+     * while app.debug is on, for a server on the developer's machine, as
+     * media URLs are (§9.6).
+     */
+    public static function baseProblem(string $base, bool $debug): ?string
+    {
+        $parts = parse_url($base);
+        $scheme = is_array($parts) ? strtolower($parts['scheme'] ?? '') : '';
+
+        if (! is_array($parts) || ! is_string($parts['host'] ?? null) || $parts['host'] === ''
+            || ! in_array($scheme, $debug ? ['https', 'http'] : ['https'], true)) {
+            return $debug ? 'must be an absolute https:// or http:// URL' : 'must be an absolute https:// URL';
+        }
+
+        if (isset($parts['query']) || isset($parts['fragment']) || isset($parts['user']) || isset($parts['pass'])
+            || str_contains($base, '?') || str_contains($base, '#')) {
+            return 'must not have a query, a fragment or credentials';
+        }
+
+        return null;
     }
 
     /** The background handshake an AsyncTask lane runs. See routesWork(). */

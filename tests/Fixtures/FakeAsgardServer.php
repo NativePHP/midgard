@@ -58,12 +58,19 @@ class FakeAsgardServer
     /** Answer with exactly this plaintext instead of a fragment message. */
     public ?string $plaintext = null;
 
+    /** Every handshake body, in order. */
+    public array $handshakeBodies = [];
+
+    /** The method of every request, handshakes included. */
+    public array $methods = [];
+
     public function __construct(public string $key = 'test-key') {}
 
     public function client(): Client
     {
         return new Client(['handler' => HandlerStack::create(function (RequestInterface $r, array $options) {
             $this->timeouts[] = $options['timeout'] ?? null;
+            $this->methods[] = $r->getMethod();
 
             return new FulfilledPromise($this->handle($r));
         }), 'http_errors' => false]);
@@ -143,6 +150,7 @@ class FakeAsgardServer
     protected function handshake(array $body): Response
     {
         $this->handshakes++;
+        $this->handshakeBodies[] = $body;
 
         if (($body['key'] ?? null) !== $this->key) {
             return new Response(403, ['Content-Type' => 'application/json'], '{"error":"unknown_key"}');

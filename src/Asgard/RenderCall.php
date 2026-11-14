@@ -13,7 +13,7 @@ namespace Native\Api\Client\Asgard;
 class RenderCall
 {
     /**
-     * @param  array{url: string, path: string, key: string, timeout: float, store: ?string}  $config
+     * @param  array{base: string, key: string, timeout: float, store: ?string}  $config
      * @param  array<string, mixed>  $body  The RegionRequest wire body.
      * @return array{ok: bool, status: int, fragment?: mixed, chrome?: array, version?: string, error?: string}
      */
@@ -25,7 +25,7 @@ class RenderCall
     /**
      * Run a `#[Server]` method on the server.
      *
-     * @param  array{url: string, path: string, key: string, timeout: float, store: ?string}  $config
+     * @param  array{base: string, key: string, timeout: float, store: ?string}  $config
      * @param  array<string, mixed>  $body  The ServerRequest wire body.
      * @return array{ok: bool, status: int, delta?: array<string, mixed>, fragments?: array<string, mixed>, error?: string}
      */
@@ -38,7 +38,7 @@ class RenderCall
      * Send a file to an `#[Upload]` method. The file is read here, on the
      * lane, so its bytes never pass through the UI thread.
      *
-     * @param  array{url: string, path: string, key: string, timeout: float, upload_timeout?: float, store: ?string}  $config
+     * @param  array{base: string, key: string, timeout: float, upload_timeout?: float, store: ?string}  $config
      * @param  array<string, mixed>  $header  The frame header, protocol and size included.
      * @return array{ok: bool, status: int, delta?: array<string, mixed>, fragments?: array<string, mixed>, refresh?: list<array>, error?: string}
      */
@@ -50,7 +50,7 @@ class RenderCall
     /**
      * Fetch the server's screen routes, handshaking first when needed.
      *
-     * @param  array{url: string, path: string, key: string, timeout: float, store: ?string}  $config
+     * @param  array{base: string, key: string, timeout: float, store: ?string}  $config
      * @return array{ok: bool, status: int, routes?: list<array{uri: string, screen: string}>, version?: string, error?: string}
      */
     public static function routes(array $config): array
@@ -61,7 +61,7 @@ class RenderCall
     /**
      * Make sure a session exists, for a stream that needs one. True on success.
      *
-     * @param  array{url: string, path: string, key: string, timeout: float, store: ?string}  $config
+     * @param  array{base: string, key: string, timeout: float, store: ?string}  $config
      */
     public static function handshake(array $config): bool
     {

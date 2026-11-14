@@ -33,7 +33,7 @@ use Native\Mobile\AsyncTask;
 class HttpServerTransport implements ServerTransport
 {
     /**
-     * @param  array{url: string, path: string, key: string, timeout: float, store: ?string}  $config
+     * @param  array{base: string, key: string, timeout: float, store: ?string}  $config
      */
     public function __construct(protected array $config) {}
 
@@ -41,7 +41,7 @@ class HttpServerTransport implements ServerTransport
     {
         $id = 'call-'.bin2hex(random_bytes(8));
         $body = self::wireBody($request);
-        $endpoint = rtrim($this->config['url'], '/').'/'.trim($this->config['path'], '/').'/call';
+        $endpoint = rtrim($this->config['base'], '/').'/call';
         $what = "#[Server] {$request->component}::{$request->method}()";
 
         $task = AsyncTask::dispatch(self::callWork($this->config, $body))
@@ -137,7 +137,7 @@ class HttpServerTransport implements ServerTransport
      * Written inline next to the closure that dispatches it, the lane would
      * get that outer closure instead.
      *
-     * @param  array{url: string, path: string, key: string, timeout: float, store: ?string}  $config
+     * @param  array{base: string, key: string, timeout: float, store: ?string}  $config
      * @param  array<string, mixed>  $body
      */
     public static function callWork(array $config, array $body): \Closure

@@ -57,7 +57,7 @@ use Native\Mobile\AsyncTask;
 class HttpFragmentSource implements FragmentSource
 {
     /**
-     * @param  array{url: string, path: string, key: string, timeout: float, store: ?string}  $config
+     * @param  array{base: string, key: string, timeout: float, store: ?string}  $config
      */
     public function __construct(
         protected array $config,
@@ -217,6 +217,6 @@ class HttpFragmentSource implements FragmentSource
 
     protected function endpoint(string $name): string
     {
-        return rtrim($this->config['url'], '/').'/'.trim($this->config['path'], '/').'/'.$name;
+        return rtrim($this->config['base'], '/').'/'.$name;
     }
 }

@@ -10,7 +10,7 @@ beforeEach(function () {
     config()->set('cache.default', 'array');
     $this->server = new FakeAsgardServer;
     $this->client = AsgardClient::make(
-        ['url' => 'https://asgard.test', 'path' => '_asgard', 'key' => 'test-key', 'timeout' => 5, 'store' => null],
+        ['base' => 'https://asgard.test/_asgard', 'key' => 'test-key', 'timeout' => 5, 'store' => null],
         $this->server->client(),
     );
 

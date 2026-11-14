@@ -23,7 +23,7 @@ use Native\Mobile\AsyncTask;
 class HttpUploadTransport implements UploadTransport
 {
     /**
-     * @param  array{url: string, path: string, key: string, timeout: float, upload_timeout?: float, store: ?string}  $config
+     * @param  array{base: string, key: string, timeout: float, upload_timeout?: float, store: ?string}  $config
      */
     public function __construct(protected array $config) {}
 
@@ -31,7 +31,7 @@ class HttpUploadTransport implements UploadTransport
     {
         $id = 'upload-'.bin2hex(random_bytes(8));
         $header = self::header($request);
-        $endpoint = rtrim($this->config['url'], '/').'/'.trim($this->config['path'], '/').'/upload';
+        $endpoint = rtrim($this->config['base'], '/').'/upload';
         $what = "upload to {$request->component}::{$request->method}()";
 
         $task = AsyncTask::dispatch(self::uploadWork($this->config, $header, $request->path))

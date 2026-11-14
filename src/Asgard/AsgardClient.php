@@ -11,6 +11,7 @@ use Native\Api\Client\Asgard\Security\Ecdh;
 use Native\Api\Client\Asgard\Security\SecurityException;
 use Native\Api\Client\Asgard\Security\SessionKeys;
 use Native\Api\Client\Asgard\Security\Wire;
+use Native\Mobile\Edge\Asgard\FragmentTypes;
 use Psr\Http\Message\ResponseInterface;
 
 /**
@@ -31,37 +32,73 @@ class AsgardClient
     /** At most this many regions, or hints, in one answer. */
     public const MAX_PARTS = 16;
 
+    /** @var list<string> */
+    protected array $elements;
+
+    /**
+     * @param  list<string>|null  $elements  The extra element types to advertise. Null asks mobile's registry.
+     */
     public function __construct(
-        protected string $url,
-        protected string $path,
+        protected string $base,
         protected string $key,
         protected SessionCache $sessions,
         protected float $timeout = 20,
         protected ?ClientInterface $http = null,
         protected float $uploadTimeout = 150,
-    ) {}
+        ?array $elements = null,
+    ) {
+        $this->elements = $elements ?? self::advertisedElements();
+    }
 
     /**
      * Build one from plain config, as an AsyncTask lane must.
      *
-     * @param  array{url: string, path: string, key: string, timeout: float, store: ?string}  $config
+     * @param  array{base: string, key: string, timeout: float, store: ?string, upload_timeout?: float, elements?: list<string>}  $config
      */
     public static function make(array $config, ?ClientInterface $http = null): self
     {
         return new self(
-            $config['url'],
-            $config['path'],
+            $config['base'],
             $config['key'],
-            new SessionCache(Cache::store($config['store'] ?? null), SessionCache::keyFor($config['url'], $config['key'])),
+            new SessionCache(Cache::store($config['store'] ?? null), SessionCache::keyFor($config['base'], $config['key'])),
             (float) ($config['timeout'] ?? 20),
             $http,
             (float) ($config['upload_timeout'] ?? 150),
+            $config['elements'] ?? null,
         );
     }
 
     public function endpoint(string $name): string
     {
-        return rtrim($this->url, '/').'/'.trim($this->path, '/').'/'.$name;
+        return rtrim($this->base, '/').'/'.$name;
+    }
+
+    /**
+     * The element types this app can render beyond the core set, for the
+     * handshake's `elements` (§6.1). They come from mobile's element
+     * registry, which includes types UI packages register at boot, through
+     * the same list mobile checks fragments against. Without mobile there
+     * are none, which means core types only.
+     *
+     * @return list<string>
+     */
+    public static function advertisedElements(): array
+    {
+        if (! class_exists(FragmentTypes::class)) {
+            return [];
+        }
+
+        try {
+            return array_values(FragmentTypes::advertised());
+        } catch (\Throwable) {
+            return [];
+        }
+    }
+
+    /** @return list<string> */
+    public function elements(): array
+    {
+        return $this->elements;
     }
 
     /** The stored session, or null when there is none or it is about to lapse. */
@@ -83,6 +120,7 @@ class AsgardClient
                     'key' => $this->key,
                     'protocol' => 1,
                     'accepts' => [self::ENCODING],
+                    'elements' => $this->elements,
                     'client_public' => Base64Url::encode($public),
                 ], JSON_THROW_ON_ERROR),
                 'headers' => ['Content-Type' => 'application/json', 'Accept' => 'application/json'],
