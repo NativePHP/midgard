@@ -6,7 +6,6 @@ use Illuminate\Support\Carbon;
 use Native\Api\Client\Asgard\Contracts\FragmentSource;
 use Native\Api\Client\Asgard\Events\ServerActionFailed;
 use Native\Api\Client\Asgard\Events\ServerRegionFailed;
-use Native\Mobile\Edge\ElementRegistry;
 use Native\Mobile\Edge\NativeComponent;
 use Native\Mobile\Edge\NativeElementCollector;
 use Native\Mobile\Edge\NativeRouter;
@@ -123,23 +122,10 @@ class ServerRegion
     ];
 
     /**
-     * Element types a fragment may not use.
-     *
-     * Chrome is screen-level and a region is a subtree (§3), so a server
-     * has no business emitting a nav bar, a tab bar or a FAB inside one.
-     * `server_region` is here too: regions are declared by the client
-     * view, so a server cannot open one.
-     *
-     * Today the chrome hoists in NativeComponent are shallow enough that
-     * these would not escape the region anyway. The rule is about who is
-     * allowed to say what, not about which hoist happens to be shallow.
+     * How deep a fragment may nest (§9.1). The root is at depth 1, and each
+     * level of `children` adds one. Deeper is refused, not truncated.
      */
-    private const DENIED_TYPES = [
-        'top_bar', 'top_bar_action', 'top_bar_title',
-        'bottom_nav', 'bottom_nav_item', 'bottom_bar',
-        'side_nav', 'side_nav_item', 'side_nav_group', 'side_nav_header',
-        'fab', 'server_region',
-    ];
+    public const MAX_DEPTH = 64;
 
     /**
      * Fragments held per owning component: `owner => [region => nodes]`.
@@ -1997,8 +1983,14 @@ class ServerRegion
      * node renders without that handler, and logged. With `app.debug` on
      * it throws instead, as an unrenderable fragment does.
      */
-    protected static function checkCallbacks(array $nodes, string $region): array
+    protected static function checkCallbacks(array $nodes, string $region, int $depth = 1): array
     {
+        // rejectionReason() refuses a fragment this deep before it gets
+        // here. This guard is so the recursion never relies on that.
+        if ($depth > self::MAX_DEPTH) {
+            throw new \RuntimeException("Asgard fragment for region '{$region}' nests deeper than ".self::MAX_DEPTH.' levels');
+        }
+
         foreach ($nodes as $i => $node) {
             foreach (array_keys(self::CALLBACK_ATTRS) as $slot) {
                 if (! array_key_exists($slot, $node)) {
@@ -2024,7 +2016,7 @@ class ServerRegion
             }
 
             if (isset($node['children'])) {
-                $node['children'] = static::checkCallbacks(static::normalize($node['children']), $region);
+                $node['children'] = static::checkCallbacks(static::normalize($node['children']), $region, $depth + 1);
             }
 
             $nodes[$i] = $node;
@@ -2049,10 +2041,18 @@ class ServerRegion
      * An unregistered type would throw out of createElement() mid-render
      * and take the whole screen with it, which is the opposite of §3's
      * "a region that never resolves keeps its placeholder". Checking at
-     * the seam means a bad fragment is never stored.
+     * the seam means a bad fragment is never stored (§9.4).
+     *
+     * A fragment may use only core types and the types this client
+     * advertised in its handshake (FragmentTypes), may not nest deeper
+     * than MAX_DEPTH, and its media props must pass MediaUrl.
      */
-    protected static function rejectionReason(array $nodes): ?string
+    protected static function rejectionReason(array $nodes, int $depth = 1): ?string
     {
+        if ($nodes !== [] && $depth > self::MAX_DEPTH) {
+            return 'it nests deeper than '.self::MAX_DEPTH.' levels';
+        }
+
         foreach ($nodes as $node) {
             if (! is_array($node) || ! isset($node['type']) || ! is_string($node['type'])) {
                 return 'a node has no type';
@@ -2060,12 +2060,8 @@ class ServerRegion
 
             $type = $node['type'];
 
-            if (in_array($type, self::DENIED_TYPES, true)) {
-                return "'{$type}' is chrome, which is screen-level and not a region's to place";
-            }
-
-            if (! ElementRegistry::has($type)) {
-                return "'{$type}' is not an element type this build has";
+            if (($problem = FragmentTypes::problem($type)) !== null) {
+                return $problem;
             }
 
             if (($problem = MediaUrl::nodeProblem($type, $node['props'] ?? null)) !== null) {
@@ -2078,7 +2074,7 @@ class ServerRegion
                 return "'{$type}' has children that are not a list";
             }
 
-            if (($reason = static::rejectionReason(static::normalize($children))) !== null) {
+            if (($reason = static::rejectionReason(static::normalize($children), $depth + 1)) !== null) {
                 return $reason;
             }
         }

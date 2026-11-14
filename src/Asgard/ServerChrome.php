@@ -7,11 +7,15 @@ namespace Native\Api\Client\Asgard;
  * §12, "Chrome").
  *
  * The server checks chrome before it sends it. The client checks it again
- * here, because it came off the wire: every key is known, every value has
- * its type, every button slot passes FragmentCallbacks::parseSlot(), a tab
- * URL is an app path, and the content slots pass the same checks as a
- * region's fragment. One bad part refuses the whole chrome, which leaves
- * the screen on the chrome it had.
+ * here, because it came off the wire: every known member has its type,
+ * every button slot passes FragmentCallbacks::parseSlot(), a tab URL is an
+ * app path, and the content slots pass the same checks as a region's
+ * fragment. One bad part refuses the whole chrome, which leaves the screen
+ * on the chrome it had.
+ *
+ * A member this client does not know is ignored and left out, so a newer
+ * server can add one (§5.3). Slots and navigations are the exception:
+ * parseSlot() still refuses a member it does not know in those.
  */
 final class ServerChrome
 {
@@ -48,14 +52,18 @@ final class ServerChrome
         foreach ($chrome as $key => $value) {
             $path = "chrome.{$key}";
 
-            $clean[$key] = match ($key) {
+            $checked = match ($key) {
                 'native' => self::bool($value, $path),
                 'font' => self::string($value, $path),
                 'nav_bar' => self::navBar($value, $path),
                 'tab_bar' => self::tabBar($value, $path),
                 'bottom_bar', 'tab_accessory' => self::content($value, $path),
-                default => self::fail("{$path} is not a chrome field"),
+                default => self::unknown(),
             };
+
+            if ($checked !== self::unknown()) {
+                $clean[$key] = $checked;
+            }
         }
 
         return $clean;
@@ -68,7 +76,7 @@ final class ServerChrome
         foreach (self::object($bar, $path) as $key => $value) {
             $at = "{$path}.{$key}";
 
-            $clean[$key] = match (true) {
+            $checked = match (true) {
                 in_array($key, ['hidden', 'back'], true) => self::bool($value, $at),
                 in_array($key, self::NAV_BAR_STRINGS, true) => self::string($value, $at),
                 $key === 'elevation' => self::int($value, $at, 0, 64),
@@ -78,8 +86,12 @@ final class ServerChrome
                 $key === 'title_view' => self::content($value, $at),
                 $key === 'search' => self::search($value, $at, true),
                 $key === 'actions' => self::list($value, $at, 16, fn ($action, $p) => self::action($action, $p, true)),
-                default => self::fail("{$at} is not a nav bar field"),
+                default => self::unknown(),
             };
+
+            if ($checked !== self::unknown()) {
+                $clean[$key] = $checked;
+            }
         }
 
         return $clean;
@@ -91,24 +103,27 @@ final class ServerChrome
         self::id($action['id'] ?? null, "{$path}.id");
 
         if (($action['divider'] ?? false) === true) {
-            return array_keys($action) === ['id', 'divider'] || array_keys($action) === ['divider', 'id']
-                ? ['id' => $action['id'], 'divider' => true]
-                : self::fail("{$path} is a divider, which has only an id");
+            // A divider has only an id. Anything else on it is ignored (§5.3).
+            return ['id' => $action['id'], 'divider' => true];
         }
 
         $clean = [];
         foreach ($action as $key => $value) {
             $at = "{$path}.{$key}";
 
-            $clean[$key] = match (true) {
+            $checked = match (true) {
                 $key === 'id' => $value,
                 in_array($key, ['label', 'a11y_label', 'icon', 'ios_icon', 'android_icon'], true) => self::string($value, $at),
                 $key === 'image' => self::media($value, $at),
                 in_array($key, ['destructive', 'disabled'], true) => self::bool($value, $at),
                 $key === 'on_press' => self::slot($value, $at, 'on_press'),
                 $key === 'items' && $topLevel => self::list($value, $at, 32, fn ($item, $p) => self::action($item, $p, false)),
-                default => self::fail("{$at} is not an action field"),
+                default => self::unknown(),
             };
+
+            if ($checked !== self::unknown()) {
+                $clean[$key] = $checked;
+            }
         }
 
         return $clean;
@@ -121,15 +136,19 @@ final class ServerChrome
         foreach (self::object($bar, $path) as $key => $value) {
             $at = "{$path}.{$key}";
 
-            $clean[$key] = match (true) {
+            $checked = match (true) {
                 in_array($key, ['hidden', 'dark', 'minimize_on_scroll'], true) => self::bool($value, $at),
                 $key === 'highlight' => self::id($value, $at),
                 in_array($key, self::TAB_BAR_STRINGS, true) => self::string($value, $at),
                 $key === 'label_visibility' => self::oneOf($value, $at, ['labeled', 'selected', 'unlabeled']),
                 $key === 'presentation' => self::presentation($value, $at),
                 $key === 'tabs' => self::list($value, $at, 10, fn ($tab, $p) => self::tab($tab, $p)),
-                default => self::fail("{$at} is not a tab bar field"),
+                default => self::unknown(),
             };
+
+            if ($checked !== self::unknown()) {
+                $clean[$key] = $checked;
+            }
         }
 
         return $clean;
@@ -145,15 +164,19 @@ final class ServerChrome
         foreach ($tab as $key => $value) {
             $at = "{$path}.{$key}";
 
-            $clean[$key] = match (true) {
+            $checked = match (true) {
                 in_array($key, ['id', 'label'], true) => $value,
                 in_array($key, ['icon', 'ios_icon', 'android_icon', 'badge', 'badge_color'], true) => self::string($value, $at),
                 $key === 'url' => FragmentCallbacks::isAppPath($value) ? $value : self::fail("{$at} must be an app path"),
                 in_array($key, ['news', 'active'], true) => self::bool($value, $at),
                 $key === 'search' => self::search($value, $at, false),
                 $key === 'on_press' => self::slot($value, $at, 'on_press'),
-                default => self::fail("{$at} is not a tab field"),
+                default => self::unknown(),
             };
+
+            if ($checked !== self::unknown()) {
+                $clean[$key] = $checked;
+            }
         }
 
         return $clean;
@@ -162,11 +185,6 @@ final class ServerChrome
     private static function logo(mixed $logo, string $path): array
     {
         $logo = self::object($logo, $path);
-
-        if (array_diff(array_keys($logo), ['src', 'height']) !== []) {
-            self::fail("{$path} is {\"src\", \"height\"?}");
-        }
-
         $height = $logo['height'] ?? 28;
 
         if (! is_int($height) && ! is_float($height) || $height <= 0 || $height > 200) {
@@ -195,13 +213,17 @@ final class ServerChrome
         foreach (self::object($search, $path) as $key => $value) {
             $at = "{$path}.{$key}";
 
-            $clean[$key] = match (true) {
+            $checked = match (true) {
                 $key === 'placeholder' => self::string($value, $at),
                 $key === 'debounce_ms' => self::int($value, $at, 0, 5000),
                 // The query is appended to args, as for on_change, so it can never navigate.
                 $key === 'on_query' && $query => self::slot($value, $at, 'on_change'),
-                default => self::fail("{$at} is not a search field"),
+                default => self::unknown(),
             };
+
+            if ($checked !== self::unknown()) {
+                $clean[$key] = $checked;
+            }
         }
 
         return $clean;
@@ -212,9 +234,9 @@ final class ServerChrome
         $presentation = self::object($presentation, $path);
         $id = $presentation['id'] ?? null;
 
-        if (array_diff(array_keys($presentation), ['id', 'configuration']) !== [] || ! is_string($id) || strlen($id) > 128
+        if (! is_string($id) || strlen($id) > 128
             || preg_match('/\A[a-z0-9]+(?:[._-][a-z0-9]+)*(?::[a-z0-9]+(?:[._-][a-z0-9]+)*)?\z/', $id) !== 1) {
-            self::fail("{$path} is {\"id\", \"configuration\"?} with a lowercase id");
+            self::fail("{$path}.id must be a lowercase id");
         }
 
         $configuration = $presentation['configuration'] ?? [];
@@ -273,6 +295,17 @@ final class ServerChrome
     private static function oneOf(mixed $value, string $path, array $allowed): string
     {
         return in_array($value, $allowed, true) ? $value : self::fail("{$path} must be one of ".implode(', ', $allowed));
+    }
+
+    /**
+     * What a member nobody knows checks to. It is left out of the clean
+     * chrome rather than refused (§5.3).
+     */
+    private static function unknown(): object
+    {
+        static $unknown = null;
+
+        return $unknown ??= new \stdClass;
     }
 
     private static function fail(string $reason): never

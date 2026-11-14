@@ -11,7 +11,6 @@ use Native\Api\Client\Asgard\Security\Ecdh;
 use Native\Api\Client\Asgard\Security\SecurityException;
 use Native\Api\Client\Asgard\Security\SessionKeys;
 use Native\Api\Client\Asgard\Security\Wire;
-use Native\Mobile\Edge\Asgard\FragmentTypes;
 use Psr\Http\Message\ResponseInterface;
 
 /**

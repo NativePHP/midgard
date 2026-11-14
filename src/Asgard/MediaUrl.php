@@ -12,7 +12,7 @@ namespace Native\Api\Client\Asgard;
  * that loads a URL must be an absolute `https:` URL. Plain `http:` is
  * allowed while `app.debug` is on, for a server on the developer's machine.
  *
- * An empty string is allowed and means no image, as it does in the app.
+ * null, an empty string and an absent prop all mean no image (§9.6).
  *
  * App-authored views never come through here and keep today's behaviour.
  */
@@ -41,11 +41,16 @@ final class MediaUrl
             }
         }
 
-        // A php-mode web view loads the app's own routes, and treats a src
-        // that is not a path as the app's start page. That is the app's to
-        // open, not a server's.
-        if ($type === 'webview' && filter_var($props['php'] ?? false, FILTER_VALIDATE_BOOLEAN)) {
-            return "'webview' cannot use php mode in a fragment";
+        // A web view that loads the app's own content is the app's to open,
+        // not a server's (§9.3). `local` turns that on in the protocol, and
+        // `php` is what this build's web view still calls it, so both are
+        // refused unless they are false or null. The src was checked above.
+        if ($type === 'webview') {
+            foreach (['local', 'php'] as $name) {
+                if (array_key_exists($name, $props) && $props[$name] !== false && $props[$name] !== null) {
+                    return "'webview' cannot load the app's own content in a fragment (prop '{$name}')";
+                }
+            }
         }
 
         return null;

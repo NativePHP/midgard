@@ -114,10 +114,27 @@ it('checks list item avatars and images and any src', function () {
     expect(MediaUrl::nodeProblem('some_plugin_video', ['src' => 'clip.mp4']))->toContain("'src'");
 });
 
-it('refuses a php-mode web view in a fragment', function () {
-    expect(MediaUrl::nodeProblem('webview', ['src' => 'https://example.test', 'php' => true]))->toContain('php mode');
-    expect(MediaUrl::nodeProblem('webview', ['src' => 'https://example.test', 'php' => 'true']))->toContain('php mode');
-    expect(MediaUrl::nodeProblem('webview', ['src' => 'https://example.test', 'php' => false]))->toBeNull();
+it('refuses a web view that loads local content, by local or php', function (string $prop, mixed $value) {
+    expect(MediaUrl::nodeProblem('webview', ['src' => 'https://example.test', $prop => $value]))
+        ->toContain("cannot load the app's own content")
+        ->toContain("'{$prop}'");
+})->with([
+    'local true' => ['local', true],
+    'local as a string' => ['local', 'true'],
+    'local "false" is still a value other than false' => ['local', 'false'],
+    'local 1' => ['local', 1],
+    'php true' => ['php', true],
+    'php as a string' => ['php', 'true'],
+]);
+
+it('allows a web view whose local and php are false, null or absent', function () {
+    expect(MediaUrl::nodeProblem('webview', ['src' => 'https://example.test']))->toBeNull();
+    expect(MediaUrl::nodeProblem('webview', ['src' => 'https://example.test', 'local' => false, 'php' => false]))->toBeNull();
+    expect(MediaUrl::nodeProblem('webview', ['src' => 'https://example.test', 'local' => null, 'php' => null]))->toBeNull();
+});
+
+it('treats a null media prop as no image', function () {
+    expect(MediaUrl::nodeProblem('image', ['src' => null]))->toBeNull();
 });
 
 it('checks media URLs in server chrome', function () {

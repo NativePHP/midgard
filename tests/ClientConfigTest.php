@@ -3,9 +3,8 @@
 use Native\Api\Client\Asgard\AsgardClient;
 use Native\Api\Client\Asgard\AsgardServiceProvider;
 use Native\Api\Client\Tests\Fixtures\FakeAsgardServer;
-use Native\Mobile\Edge\Asgard\FragmentTypes;
-
-require_once __DIR__.'/Fixtures/AsgardRegionStandIns.php';
+use Native\Mobile\Edge\ElementRegistry;
+use Native\Mobile\Edge\Elements\Column;
 
 /**
  * One base URL for the server (protocol §8), and the element types the
@@ -58,13 +57,20 @@ it('allows an http base URL while app.debug is on, for a server on this machine'
     expect(AsgardServiceProvider::clientConfig()['base'])->toBe('http://asgard-demo-server.test/_asgard');
 });
 
-it('advertises what mobile says it can render beyond core', function () {
-    FragmentTypes::$advertised = ['list_item', 'webview'];
+it('advertises what the element registry holds beyond core', function () {
+    $registered = ElementRegistry::all();
+    ElementRegistry::register('list_item', Column::class);
+    ElementRegistry::register('webview', Column::class);
 
-    expect(AsgardClient::advertisedElements())->toBe(['list_item', 'webview'])
-        ->and(AsgardClient::make(['base' => 'https://a.test/_asgard', 'key' => 'k', 'store' => null])->elements())->toBe(['list_item', 'webview']);
-
-    FragmentTypes::$advertised = ['list_item', 'toggle'];
+    try {
+        expect(AsgardClient::advertisedElements())->toContain('list_item', 'webview')->not->toContain('column', 'top_bar')
+            ->and(AsgardClient::make(['base' => 'https://a.test/_asgard', 'key' => 'k', 'store' => null])->elements())->toBe(AsgardClient::advertisedElements());
+    } finally {
+        ElementRegistry::reset();
+        foreach ($registered as $type => $class) {
+            ElementRegistry::register($type, $class);
+        }
+    }
 });
 
 it('sends the extra element types in a plain POST handshake, without the override header', function () {

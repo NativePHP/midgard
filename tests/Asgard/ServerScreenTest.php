@@ -212,7 +212,15 @@ it('keeps the chrome it had when new chrome fails the check', function () {
 
     answer($screen, PROMO_BODY, ['nav_bar' => ['title' => 'Good']]);
 
-    expect(ServerRegion::push('promos.show', ['id' => '42'], 'screen', PROMO_BODY, ['nav_bar' => ['title' => 'Bad', 'colour' => 'red']]))->toBe(1);
+    expect(ServerRegion::push('promos.show', ['id' => '42'], 'screen', PROMO_BODY, ['nav_bar' => ['title' => 'Bad', 'elevation' => 'high']]))->toBe(1);
+
+    repaint($screen)->assertNavTitle('Good');
+});
+
+it('ignores a chrome member it does not know', function () {
+    $screen = Native::visit('/promos/42');
+
+    answer($screen, PROMO_BODY, ['nav_bar' => ['title' => 'Good', 'colour' => 'red'], 'sparkles' => true]);
 
     repaint($screen)->assertNavTitle('Good');
 });
