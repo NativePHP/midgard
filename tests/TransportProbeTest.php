@@ -135,13 +135,20 @@ it('remembers nothing when the POST form drops the connection', function () {
         ->and($this->client->transport())->toBeNull();
 });
 
-it('sends a fresh nonce when an action falls back', function () {
+it('never probes with a request that changes the server', function () {
     $this->server->blockQuery = 405;
 
     $this->client->callMethod(['protocol' => 1, 'component' => 'dice', 'method' => 'roll', 'args' => [], 'state' => []]);
+    $this->client->render([...probeBody(), 'action' => ['call' => 'like', 'args' => []]]);
 
-    expect($this->server->requests)->toHaveCount(1)
+    // Straight to POST plus the header, sent once each, and nothing learned.
+    expect($this->server->methods)->toBe(['POST', 'POST', 'POST'])
         ->and($this->server->requests[0]['nonce'])->toMatch('/^[A-Za-z0-9_-]{22}$/')
+        ->and($this->client->transport())->toBeNull();
+
+    // The next safe request is the one that probes.
+    $this->client->render(probeBody());
+    expect(array_slice($this->server->methods, 3))->toBe(['QUERY', 'POST'])
         ->and($this->client->transport())->toBe(TransportMemory::POST);
 });
 

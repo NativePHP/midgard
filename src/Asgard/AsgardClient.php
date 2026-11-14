@@ -523,6 +523,13 @@ class AsgardClient
     {
         $known = $this->transport->get();
 
+        // Only a safe request probes (§8): a render with no action, or the
+        // route list. Anything that changes the server goes as POST plus the
+        // header until the form is known, so a fallback can never run it twice.
+        if ($known === null && ($action || ! in_array($name, ['render', 'routes'], true))) {
+            return $this->exchange($session, $name, $plaintext, $action, $timeout, TransportMemory::POST)[1];
+        }
+
         [$asgard, $result] = $this->exchange($session, $name, $plaintext, $action, $timeout, $known ?? TransportMemory::QUERY);
 
         if ($known !== null || $asgard === null) {
