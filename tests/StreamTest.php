@@ -57,7 +57,7 @@ it('opens a GET stream through the bridge', function () {
 it('opens a QUERY stream when asked, with its body', function () {
     Stream::open('regions', 'https://api.test/stream', ['Content-Type' => 'application/json'], 'sealed', 'query');
 
-    $params = $GLOBALS['nativephp_test_calls'][0]['params'];
+    $params = $this->bridge->log[0]['params'];
 
     expect($params['method'])->toBe('QUERY')
         ->and(base64_decode($params['body'], true))->toBe('sealed');
@@ -70,7 +70,7 @@ it('refuses a body with any method but POST or QUERY', function () {
 it('opens a GET stream without a body whatever method is named', function () {
     Stream::open('regions', 'https://api.test/stream', [], null, 'QUERY');
 
-    expect($GLOBALS['nativephp_test_calls'][0]['params']['method'])->toBe('GET');
+    expect($this->bridge->log[0]['params']['method'])->toBe('GET');
 });
 
 it('opens a POST stream with the body in base64, so any bytes cross the bridge', function () {

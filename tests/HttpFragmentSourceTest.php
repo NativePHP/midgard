@@ -20,7 +20,7 @@ use Native\Mobile\Testing\TestableComponent;
 beforeEach(function () {
     app('view')->addLocation(__DIR__.'/Fixtures/views');
 
-    $this->config = ['url' => 'https://a.test', 'path' => '_asgard', 'key' => 'k', 'timeout' => 5, 'store' => null];
+    $this->config = ['base' => 'https://a.test/_asgard', 'key' => 'k', 'timeout' => 5, 'store' => null];
 
     $this->failures = [];
     Event::listen(ServerRegionFailed::class, fn ($event) => $this->failures[] = $event);
@@ -77,12 +77,8 @@ it('hands an action answer\'s other regions and hints to deliver', function () {
 // ── Batches ─────────────────────────────────────────
 
 it('sends a batch as one render request on a lane', function () {
-<<<<<<< HEAD
     [, $batch] = regionsInFlight();
     holdLanes();
-=======
-    $config = ['base' => 'https://a.test/_asgard', 'key' => 'k', 'timeout' => 5, 'store' => null];
->>>>>>> 182c101 (Configure Asgard with one base URL and advertise element types)
 
     (new HttpFragmentSource($this->config))->batch($batch);
 
@@ -175,12 +171,8 @@ it('reports a render call that never came back as a network failure', function (
 });
 
 it('ships the batch render to the lane, not the batch() around it', function () {
-<<<<<<< HEAD
     [, $batch] = regionsInFlight();
     holdLanes();
-=======
-    $config = ['base' => 'https://a.test/_asgard', 'key' => 'k', 'timeout' => 5, 'store' => null];
->>>>>>> 182c101 (Configure Asgard with one base URL and advertise element types)
 
     (new HttpFragmentSource($this->config))->batch($batch);
 
@@ -188,7 +180,7 @@ it('ships the batch render to the lane, not the batch() around it', function () 
 });
 
 it('is the bound source when an Asgard server is configured', function () {
-    config()->set('midgard.asgard.url', 'https://asgard.test');
+    config()->set('midgard.asgard.base', 'https://asgard.test/_asgard');
     config()->set('midgard.asgard.key', 'test-key');
     app()->offsetUnset(FragmentSource::class);
 
