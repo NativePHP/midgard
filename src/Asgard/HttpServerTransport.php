@@ -3,10 +3,8 @@
 namespace Native\Api\Client\Asgard;
 
 use Illuminate\Support\Facades\Log;
+use Native\Api\Client\Asgard\Contracts\ServerTransport;
 use Native\Mobile\AsyncTask;
-use Native\Mobile\Edge\Asgard\Contracts\ServerTransport;
-use Native\Mobile\Edge\Asgard\ServerMethods;
-use Native\Mobile\Edge\Asgard\ServerRequest;
 
 /**
  * Sends `#[Server]` method calls to an Asgard server over HTTP

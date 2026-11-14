@@ -1,28 +1,27 @@
 <?php
 
-use Laravel\SerializableClosure\SerializableClosure;
+use Illuminate\Support\Facades\Event;
 use Native\Api\Client\Asgard\AsgardClient;
 use Native\Api\Client\Asgard\AsgardServiceProvider;
+use Native\Api\Client\Asgard\Contracts\UploadTransport;
+use Native\Api\Client\Asgard\Events\ServerActionFailed;
 use Native\Api\Client\Asgard\HttpUploadTransport;
+use Native\Api\Client\Asgard\Testing\Asgard;
+use Native\Api\Client\Asgard\UploadRequest;
+use Native\Api\Client\Tests\Fixtures\CallRecorderScreen;
 use Native\Api\Client\Tests\Fixtures\FakeAsgardServer;
-use Native\Mobile\AsyncTask;
-use Native\Mobile\Edge\Asgard\Contracts\UploadTransport;
-use Native\Mobile\Edge\Asgard\ServerMethods;
-use Native\Mobile\Edge\Asgard\UploadRequest;
-
-require_once __DIR__.'/Fixtures/AsgardRegionStandIns.php';
-require_once __DIR__.'/Fixtures/AsgardServerMethodStandIns.php';
+use Native\Mobile\Edge\NativeComponent;
+use Native\Mobile\Support\AsyncTaskRegistry;
+use Native\Mobile\Testing\Native;
+use Native\Mobile\Testing\TestableComponent;
 
 // Uploads to #[Upload] methods (protocol §10.6).
 beforeEach(function () {
-    if (! property_exists(ServerMethods::class, 'delivered')) {
-        $this->markTestSkipped('nativephp/mobile is installed, so the stand-ins are not in use.');
-    }
-
     config()->set('cache.default', 'array');
-    ServerMethods::$delivered = [];
-    AsyncTask::$dispatched = [];
-    AsyncTask::$available = true;
+    app('view')->addLocation(__DIR__.'/Fixtures/views');
+
+    $this->failures = [];
+    Event::listen(ServerActionFailed::class, fn (ServerActionFailed $event) => $this->failures[] = $event);
 
     $this->config = ['url' => 'https://asgard.test', 'path' => '_asgard', 'key' => 'test-key', 'timeout' => 5, 'upload_timeout' => 90, 'store' => null];
     $this->server = new FakeAsgardServer;
@@ -133,21 +132,49 @@ it('handshakes again and retries once when the server lost the session', functio
 
 // ── Sending ─────────────────────────────────────────
 
+/**
+ * A screen with an upload in flight through HttpUploadTransport, its lane
+ * held until the test finishes it.
+ *
+ * @return array{0: TestableComponent, 1: string, 2: string} the screen, the upload's id and its task's id
+ */
+function uploadThroughHttp(array $config, string $file, bool $laneAvailable = true): array
+{
+    holdLanes($laneAvailable);
+    Asgard::fakeFragmentSource();
+    app()->instance(UploadTransport::class, new HttpUploadTransport($config));
+
+    $screen = Native::test(CallRecorderScreen::class);
+    $id = $screen->instance()->uploadToServer('savePhoto', $file);
+
+    return [$screen, (string) $id, $laneAvailable ? lastTaskId() : ''];
+}
+
 it('starts the upload on a lane, past the HTTP timeout, and returns its id', function () {
-    $id = (new HttpUploadTransport($this->config))->upload(uploadRequest($this->file, strlen($this->bytes)));
+    holdLanes();
+    $previous = NativeComponent::markActive(new CallRecorderScreen);
+
+    try {
+        $id = (new HttpUploadTransport($this->config))->upload(uploadRequest($this->file, strlen($this->bytes)));
+    } finally {
+        NativeComponent::restoreActive($previous);
+    }
+
+    $task = lastTaskId();
 
     expect($id)->toMatch('/^upload-[0-9a-f]{16}$/')
-        ->and(AsyncTask::$dispatched)->toHaveCount(1)
-        ->and(AsyncTask::$dispatched[0]->started)->toBeTrue()
-        ->and(AsyncTask::$dispatched[0]->anyScreen)->toBeTrue()
-        ->and(AsyncTask::$dispatched[0]->timeout)->toBe(120)
-        ->and(ServerMethods::$delivered)->toBe([]);
+        ->and(heldTasks())->toHaveCount(1)
+        ->and(heldTasks()[0]['timeout'])->toBe(120)
+        ->and(AsyncTaskRegistry::origin($task))->toBeNull()
+        ->and(AsyncTaskRegistry::scope($task))->not->toBeNull();
 });
 
 it('ships only the path to the lane, never the bytes', function () {
+    holdLanes();
+
     (new HttpUploadTransport($this->config))->upload(uploadRequest($this->file, strlen($this->bytes)));
 
-    $code = serialize(new SerializableClosure(AsyncTask::$dispatched[0]->work));
+    $code = taskPayload(lastTaskId());
 
     expect($code)->toContain('RenderCall::upload($config, $header, $path)')
         ->not->toContain('->finished(')
@@ -155,40 +182,56 @@ it('ships only the path to the lane, never the bytes', function () {
 });
 
 it('delivers the answer under the id it returned, like a call', function () {
-    $id = (new HttpUploadTransport($this->config))->upload(uploadRequest($this->file, strlen($this->bytes)));
+    [$screen, $id, $task] = uploadThroughHttp($this->config, $this->file);
 
-    (AsyncTask::$dispatched[0]->finished)(['ok' => true, 'status' => 200, 'delta' => ['photo' => 'a.jpg']]);
+    expect($id)->toMatch('/^upload-[0-9a-f]{16}$/');
 
-    expect(ServerMethods::$delivered)->toBe([['id' => $id, 'ok' => true, 'delta' => ['photo' => 'a.jpg'], 'fragments' => [], 'refresh' => []]]);
+    finishTask($task, ['ok' => true, 'status' => 200, 'delta' => ['photo' => 'a.jpg']]);
+
+    expect($screen->get('photo'))->toBe('a.jpg')
+        ->and($this->failures)->toBe([]);
 });
 
-it('maps failures to codes the device reads as reasons', function (array $result, ?int $code) {
-    $id = (new HttpUploadTransport($this->config))->upload(uploadRequest($this->file, strlen($this->bytes)));
+it('maps failures to codes the device reads as reasons', function (array $result, ?int $status, string $reason) {
+    [$screen, $id, $task] = uploadThroughHttp($this->config, $this->file);
 
-    (AsyncTask::$dispatched[0]->finished)($result);
+    finishTask($task, $result);
 
-    expect(ServerMethods::$delivered[0])->toMatchArray(['id' => $id, 'ok' => false, 'code' => $code]);
+    // The failure fires on the screen's next turn.
+    $screen->wait();
+
+    expect($this->failures)->toHaveCount(1)
+        ->and($this->failures[0]->requestId)->toBe($id)
+        ->and($this->failures[0]->action)->toBe('savePhoto')
+        ->and($this->failures[0]->status)->toBe($status)
+        ->and($this->failures[0]->reason)->toBe($reason);
 })->with([
-    'too large' => [['ok' => false, 'status' => 413, 'error' => 'too_large'], 413],
-    'wrong type' => [['ok' => false, 'status' => 415, 'error' => 'unsupported_type'], 415],
-    'no response' => [['ok' => false, 'status' => 0, 'error' => 'cURL error 28'], null],
-    'file changed' => [['ok' => false, 'status' => 0, 'error' => 'The file changed after it was checked.'], null],
+    'too large' => [['ok' => false, 'status' => 413, 'error' => 'too_large'], 413, 'server'],
+    'wrong type' => [['ok' => false, 'status' => 415, 'error' => 'unsupported_type'], 415, 'server'],
+    'no response' => [['ok' => false, 'status' => 0, 'error' => 'cURL error 28'], null, 'network'],
+    'file changed' => [['ok' => false, 'status' => 0, 'error' => 'The file changed after it was checked.'], null, 'network'],
 ]);
 
 it('reports a lane that died as a network failure', function () {
-    $id = (new HttpUploadTransport($this->config))->upload(uploadRequest($this->file, strlen($this->bytes)));
+    [$screen, $id, $task] = uploadThroughHttp($this->config, $this->file);
 
-    (AsyncTask::$dispatched[0]->failed)(new RuntimeException('The async task did not complete within 180 seconds.'));
+    failTask($task, new RuntimeException('The async task did not complete within 180 seconds.'));
+    $screen->wait();
 
-    expect(ServerMethods::$delivered)->toBe([['id' => $id, 'ok' => false, 'error' => 'The async task did not complete within 180 seconds.', 'code' => null]]);
+    expect($this->failures)->toHaveCount(1)
+        ->and($this->failures[0]->requestId)->toBe($id)
+        ->and($this->failures[0]->reason)->toBe('network')
+        ->and($this->failures[0]->message)->toBe('The async task did not complete within 180 seconds.');
 });
 
 it('reports a lane that cannot start through deliver, before upload returns', function () {
-    AsyncTask::$available = false;
+    [$screen, $id] = uploadThroughHttp($this->config, $this->file, laneAvailable: false);
+    $screen->wait();
 
-    $id = (new HttpUploadTransport($this->config))->upload(uploadRequest($this->file, strlen($this->bytes)));
-
-    expect(ServerMethods::$delivered)->toBe([['id' => $id, 'ok' => false, 'error' => 'The background lane is not available.', 'code' => null]]);
+    expect($this->failures)->toHaveCount(1)
+        ->and($this->failures[0]->requestId)->toBe($id)
+        ->and($this->failures[0]->reason)->toBe('network')
+        ->and($this->failures[0]->message)->toContain('the background lane is not available');
 });
 
 it('throws on state JSON cannot carry, so the send fails on the UI thread', function () {
@@ -211,5 +254,5 @@ it('defaults the upload timeout above the device upload timeout', function () {
     config()->set('midgard.asgard.key', 'test-key');
 
     expect(AsgardServiceProvider::clientConfig()['upload_timeout'])->toBe(150.0)
-        ->and(AsgardServiceProvider::clientConfig()['upload_timeout'])->toBeGreaterThan(120.0);
+        ->and(AsgardServiceProvider::clientConfig()['upload_timeout'])->toBeGreaterThan((float) config('midgard.asgard.upload_timeout'));
 });

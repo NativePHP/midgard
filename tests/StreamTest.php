@@ -7,12 +7,28 @@ use Native\Api\Client\Asgard\Events\StreamMessage;
 use Native\Api\Client\Asgard\Events\StreamOpened;
 use Native\Api\Client\Asgard\Stream;
 use Native\Mobile\Events\Contracts\DispatchableFromNative;
+use Native\Mobile\Testing\FakeBridge;
 use PHPUnit\Framework\AssertionFailedError;
 
 beforeEach(function () {
-    $GLOBALS['nativephp_test_calls'] = [];
-    $GLOBALS['nativephp_test_raw'] = [];
-    $GLOBALS['nativephp_test_response'] = null;
+    // nativephp/mobile's fake bridge, which also keeps the raw JSON each
+    // call carried, so a test can tell {} from [].
+    $this->bridge = new class extends FakeBridge
+    {
+        public array $log = [];
+
+        public array $raw = [];
+
+        public function call(string $method, string $params = '{}'): ?string
+        {
+            $this->raw[] = $params;
+            $this->log[] = ['method' => $method, 'params' => json_decode($params, true)];
+
+            return parent::call($method, $params);
+        }
+    };
+
+    app()->instance(FakeBridge::class, $this->bridge);
 });
 
 afterEach(function () {
@@ -24,9 +40,9 @@ afterEach(function () {
 it('opens a GET stream through the bridge', function () {
     Stream::open('regions', 'https://api.test/stream', ['Authorization' => 'Bearer abc']);
 
-    expect($GLOBALS['nativephp_test_calls'])->toHaveCount(1);
+    expect($this->bridge->log)->toHaveCount(1);
 
-    $call = $GLOBALS['nativephp_test_calls'][0];
+    $call = $this->bridge->log[0];
 
     expect($call['method'])->toBe('Asgard.Stream.Open')
         ->and($call['params'])->toBe([
@@ -42,7 +58,7 @@ it('opens a POST stream with the body in base64, so any bytes cross the bridge',
     $body = "\x00\xff ciphertext";
     Stream::open('regions', 'https://api.test/stream', ['Content-Type' => 'application/json'], $body);
 
-    $params = $GLOBALS['nativephp_test_calls'][0]['params'];
+    $params = $this->bridge->log[0]['params'];
 
     expect($params['method'])->toBe('POST')
         ->and(base64_decode($params['body'], true))->toBe($body)
@@ -52,19 +68,19 @@ it('opens a POST stream with the body in base64, so any bytes cross the bridge',
 it('sends no content type of its own', function () {
     Stream::open('a', 'https://api.test/s', [], '{}');
 
-    expect($GLOBALS['nativephp_test_calls'][0]['params']['headers'])->toBe([]);
+    expect($this->bridge->log[0]['params']['headers'])->toBe([]);
 });
 
 it('sends empty headers as a JSON object', function () {
     Stream::open('a', 'https://api.test/s');
 
-    expect($GLOBALS['nativephp_test_raw'][0])->toContain('"headers":{}');
+    expect($this->bridge->raw[0])->toContain('"headers":{}');
 });
 
 it('treats a POST with an empty body as a POST', function () {
     Stream::open('a', 'https://api.test/s', [], '');
 
-    $params = $GLOBALS['nativephp_test_calls'][0]['params'];
+    $params = $this->bridge->log[0]['params'];
 
     expect($params['method'])->toBe('POST')
         ->and($params['body'])->toBe('');
@@ -73,13 +89,13 @@ it('treats a POST with an empty body as a POST', function () {
 it('closes a stream through the bridge', function () {
     Stream::close('regions');
 
-    expect($GLOBALS['nativephp_test_calls'])->toBe([
+    expect($this->bridge->log)->toBe([
         ['method' => 'Asgard.Stream.Close', 'params' => ['id' => 'regions']],
     ]);
 });
 
 it('throws when the native side reports an error', function () {
-    $GLOBALS['nativephp_test_response'] = json_encode([
+    $this->bridge->respondTo(Stream::OPEN, [
         'status' => 'error',
         'code' => 'INVALID_PARAMETERS',
         'message' => 'url must be an http or https URL',
@@ -89,11 +105,11 @@ it('throws when the native side reports an error', function () {
 })->throws(RuntimeException::class, 'url must be an http or https URL');
 
 it('ignores a successful native answer', function () {
-    $GLOBALS['nativephp_test_response'] = json_encode(['id' => 'a']);
+    $this->bridge->respondTo(Stream::OPEN, ['id' => 'a']);
 
     Stream::open('a', 'https://api.test/s');
 
-    expect($GLOBALS['nativephp_test_calls'])->toHaveCount(1);
+    expect($this->bridge->log)->toHaveCount(1);
 });
 
 // The events
@@ -163,7 +179,7 @@ it('records opens and closes without touching the bridge', function () {
     Stream::open('regions', 'https://api.test/stream', ['A' => 'b'], '{"x":1}');
     Stream::close('other');
 
-    expect($GLOBALS['nativephp_test_calls'])->toBe([])
+    expect($this->bridge->log)->toBe([])
         ->and($fake->opens)->toHaveCount(1)
         ->and($fake->opens[0])->toBe([
             'id' => 'regions',
@@ -272,5 +288,5 @@ it('goes back to the real bridge after unfake', function () {
 
     Stream::close('a');
 
-    expect($GLOBALS['nativephp_test_calls'])->toHaveCount(1);
+    expect($this->bridge->log)->toHaveCount(1);
 });

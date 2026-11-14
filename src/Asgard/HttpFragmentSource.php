@@ -3,12 +3,8 @@
 namespace Native\Api\Client\Asgard;
 
 use Illuminate\Support\Facades\Log;
+use Native\Api\Client\Asgard\Contracts\FragmentSource;
 use Native\Mobile\AsyncTask;
-use Native\Mobile\Edge\Asgard\ActionRequest;
-use Native\Mobile\Edge\Asgard\Contracts\FragmentSource;
-use Native\Mobile\Edge\Asgard\RegionBatch;
-use Native\Mobile\Edge\Asgard\RegionRequest;
-use Native\Mobile\Edge\Asgard\ServerRegion;
 
 /**
  * Fetches region fragments from an Asgard server over HTTP.

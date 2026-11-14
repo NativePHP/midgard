@@ -2,27 +2,23 @@
 
 use Native\Api\Client\Asgard\AsgardClient;
 use Native\Api\Client\Asgard\AsgardServiceProvider;
+use Native\Api\Client\Asgard\Contracts\ServerTransport;
 use Native\Api\Client\Asgard\HttpServerTransport;
+use Native\Api\Client\Asgard\ServerRequest;
+use Native\Api\Client\Asgard\ServerResponse;
+use Native\Api\Client\Asgard\Testing\Asgard;
+use Native\Api\Client\Tests\Fixtures\CallRecorderScreen;
 use Native\Api\Client\Tests\Fixtures\FakeAsgardServer;
-use Native\Mobile\AsyncTask;
-use Native\Mobile\Edge\Asgard\Contracts\ServerTransport;
-use Native\Mobile\Edge\Asgard\ServerMethods;
-use Native\Mobile\Edge\Asgard\ServerRequest;
-
-require_once __DIR__.'/Fixtures/AsgardRegionStandIns.php';
-require_once __DIR__.'/Fixtures/AsgardServerMethodStandIns.php';
+use Native\Mobile\Edge\NativeComponent;
+use Native\Mobile\Support\AsyncTaskRegistry;
+use Native\Mobile\Testing\Native;
+use Native\Mobile\Testing\TestableComponent;
 
 // #[Server] method calls (ASGARD-SERVER-METHODS.md §3, protocol §10.5).
 beforeEach(function () {
-    // Only the stand-ins record. With nativephp/mobile installed, skip.
-    if (! property_exists(ServerMethods::class, 'delivered')) {
-        $this->markTestSkipped('nativephp/mobile is installed, so the stand-ins are not in use.');
-    }
-
     config()->set('cache.default', 'array');
-    ServerMethods::$delivered = [];
-    AsyncTask::$dispatched = [];
-    AsyncTask::$available = true;
+    app('view')->addLocation(__DIR__.'/Fixtures/views');
+    CallRecorderScreen::$responses = [];
 
     $this->config = ['url' => 'https://asgard.test', 'path' => '_asgard', 'key' => 'test-key', 'timeout' => 5, 'store' => null];
     $this->server = new FakeAsgardServer;
@@ -132,52 +128,122 @@ it('throws on state JSON cannot carry, so the send fails on the UI thread', func
 
 // ── Sending ─────────────────────────────────────────
 
+/**
+ * A screen with a #[Server] call in flight through HttpServerTransport,
+ * its lane held until the test finishes it.
+ *
+ * @return array{0: TestableComponent, 1: string}
+ */
+function callThroughHttp(array $config, bool $laneAvailable = true): array
+{
+    holdLanes($laneAvailable);
+    Asgard::fakeFragmentSource();
+    app()->instance(ServerTransport::class, new HttpServerTransport($config));
+
+    $screen = Native::test(CallRecorderScreen::class)->call('roll');
+
+    return [$screen, lastTaskId()];
+}
+
+/**
+ * A screen with a #[Server] call in flight, the fake transport holding it.
+ *
+ * @return array{0: TestableComponent, 1: string}
+ */
+function callInFlight(): array
+{
+    $server = Asgard::fakeServerTransport();
+    Asgard::fakeFragmentSource();
+
+    $screen = Native::test(CallRecorderScreen::class)->call('roll');
+
+    return [$screen, $server->lastId()];
+}
+
+/** The one answer the screen's call got. */
+function onlyResponse(): ServerResponse
+{
+    expect(CallRecorderScreen::$responses)->toHaveCount(1);
+
+    return CallRecorderScreen::$responses[0];
+}
+
 it('starts the call on a lane taken on any screen and returns its id', function () {
-    $id = (new HttpServerTransport($this->config))->send(serverRequest());
+    holdLanes();
+    $transport = new HttpServerTransport($this->config);
+
+    // The screen on show when the call goes out. A lane taken on any screen
+    // is not tied to it.
+    $previous = NativeComponent::markActive(new CallRecorderScreen);
+
+    try {
+        $id = $transport->send(serverRequest());
+    } finally {
+        NativeComponent::restoreActive($previous);
+    }
+
+    $task = lastTaskId();
 
     expect($id)->toMatch('/^call-[0-9a-f]{16}$/')
-        ->and(AsyncTask::$dispatched)->toHaveCount(1)
-        ->and(AsyncTask::$dispatched[0]->started)->toBeTrue()
-        ->and(AsyncTask::$dispatched[0]->anyScreen)->toBeTrue()
-        ->and(ServerMethods::$delivered)->toBe([]);
+        ->and(heldTasks())->toHaveCount(1)
+        ->and(AsyncTaskRegistry::scope($task))->not->toBeNull()
+        ->and(AsyncTaskRegistry::origin($task))->toBeNull()
+        ->and(taskPayload($task))->toContain('RenderCall::serverMethod($config, $body)');
 
-    expect((new HttpServerTransport($this->config))->send(serverRequest()))->not->toBe($id);
+    expect($transport->send(serverRequest()))->not->toBe($id);
 });
 
 it('delivers the answer under the id it returned', function () {
-    $id = (new HttpServerTransport($this->config))->send(serverRequest());
+    [$screen, $task] = callThroughHttp($this->config);
 
-    (AsyncTask::$dispatched[0]->finished)(['ok' => true, 'status' => 200, 'delta' => ['roll' => 4]]);
+    expect(CallRecorderScreen::$responses)->toBe([]);
 
-    expect(ServerMethods::$delivered)->toBe([['id' => $id, 'ok' => true, 'delta' => ['roll' => 4], 'fragments' => [], 'refresh' => []]]);
+    finishTask($task, ['ok' => true, 'status' => 200, 'delta' => ['roll' => 4]]);
+
+    expect(onlyResponse()->ok)->toBeTrue()
+        ->and(onlyResponse()->id)->toMatch('/^call-[0-9a-f]{16}$/')
+        ->and(onlyResponse()->applied)->toBe(['roll' => 4])
+        ->and($screen->get('roll'))->toBe(4);
 });
 
 it('hands the regions and hints a call answer carries to deliver', function () {
-    $fragments = ['stats' => ['fragment' => ['type' => 'text'], 'version' => 'v1']];
-    $refresh = [['component' => 'app.inbox', 'region' => 'unread']];
+    $source = Asgard::fakeFragmentSource();
+    [$screen, $id] = callInFlight();
+    $asked = count($source->requests('stats'));
 
-    HttpServerTransport::answered('call-1', ['ok' => true, 'status' => 200, 'delta' => [], 'fragments' => $fragments, 'refresh' => $refresh], 'https://a.test/_asgard/call', 'roll');
+    $fragments = ['stats' => ['fragment' => ['type' => 'text', 'props' => ['text' => 'Ten sales']], 'version' => 'v1']];
+    $refresh = [['component' => 'native.api.client.tests.fixtures.call_recorder_screen', 'region' => 'stats']];
 
-    expect(ServerMethods::$delivered)->toBe([['id' => 'call-1', 'ok' => true, 'delta' => [], 'fragments' => $fragments, 'refresh' => $refresh]]);
+    HttpServerTransport::answered($id, ['ok' => true, 'status' => 200, 'delta' => [], 'fragments' => $fragments, 'refresh' => $refresh], 'https://a.test/_asgard/call', 'roll');
+
+    expect(onlyResponse()->ok)->toBeTrue()
+        ->and(onlyResponse()->refusedFragments)->toBe([]);
+
+    // The fragment paints, and the hint fetches the region again once the
+    // screen has drawn its next frame.
+    $screen->wait()->assertSee('Ten sales');
+
+    expect($source->requests('stats'))->toHaveCount($asked + 1);
 });
 
 it('reports a lane that cannot start through deliver, before send returns', function () {
-    AsyncTask::$available = false;
+    callThroughHttp($this->config, laneAvailable: false);
 
-    $id = (new HttpServerTransport($this->config))->send(serverRequest());
-
-    expect(ServerMethods::$delivered)->toBe([['id' => $id, 'ok' => false, 'error' => 'The background lane is not available.', 'code' => null]]);
+    expect(onlyResponse()->ok)->toBeFalse()
+        ->and(onlyResponse()->error)->toContain('the background lane is not available')
+        ->and(onlyResponse()->code)->toBeNull();
 });
 
 // ── Failures ────────────────────────────────────────
 
 it('maps a failed answer to a code the device reads as a reason', function (mixed $result, ?int $code) {
-    HttpServerTransport::answered('call-1', $result, 'https://a.test/_asgard/call', 'roll');
+    [, $id] = callInFlight();
 
-    expect(ServerMethods::$delivered)->toHaveCount(1)
-        ->and(ServerMethods::$delivered[0]['id'])->toBe('call-1')
-        ->and(ServerMethods::$delivered[0]['ok'])->toBeFalse()
-        ->and(ServerMethods::$delivered[0]['code'])->toBe($code);
+    HttpServerTransport::answered($id, $result, 'https://a.test/_asgard/call', 'roll');
+
+    expect(onlyResponse()->id)->toBe($id)
+        ->and(onlyResponse()->ok)->toBeFalse()
+        ->and(onlyResponse()->code)->toBe($code);
 })->with([
     'no response' => [['ok' => false, 'status' => 0, 'error' => 'cURL error 28'], null],
     'a handshake that got nothing' => [['ok' => false, 'status' => 0, 'error' => 'Handshake failed: timeout'], null],
@@ -190,9 +256,13 @@ it('maps a failed answer to a code the device reads as a reason', function (mixe
 ]);
 
 it('reports a call that never came back as a network failure', function () {
-    HttpServerTransport::lost('call-2', new RuntimeException('The async task did not complete within 60 seconds.'), 'roll');
+    [, $task] = callThroughHttp($this->config);
 
-    expect(ServerMethods::$delivered)->toBe([['id' => 'call-2', 'ok' => false, 'error' => 'The async task did not complete within 60 seconds.', 'code' => null]]);
+    failTask($task, new RuntimeException('The async task did not complete within 60 seconds.'));
+
+    expect(onlyResponse()->ok)->toBeFalse()
+        ->and(onlyResponse()->error)->toBe('The async task did not complete within 60 seconds.')
+        ->and(onlyResponse()->code)->toBeNull();
 });
 
 // ── Binding ─────────────────────────────────────────
@@ -210,5 +280,5 @@ it('defaults the HTTP timeout above the device timeouts', function () {
     config()->set('midgard.asgard.url', 'https://asgard.test');
     config()->set('midgard.asgard.key', 'test-key');
 
-    expect(AsgardServiceProvider::clientConfig()['timeout'])->toBeGreaterThan(15.0);
+    expect(AsgardServiceProvider::clientConfig()['timeout'])->toBeGreaterThan((float) config('midgard.asgard.action_timeout'));
 });

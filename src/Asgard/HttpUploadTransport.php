@@ -2,9 +2,8 @@
 
 namespace Native\Api\Client\Asgard;
 
+use Native\Api\Client\Asgard\Contracts\UploadTransport;
 use Native\Mobile\AsyncTask;
-use Native\Mobile\Edge\Asgard\Contracts\UploadTransport;
-use Native\Mobile\Edge\Asgard\UploadRequest;
 
 /**
  * Sends files from uploadToServer() to an Asgard server over HTTP
@@ -17,7 +16,7 @@ use Native\Mobile\Edge\Asgard\UploadRequest;
  * goes back through HttpServerTransport::answered() to
  * ServerMethods::deliver().
  *
- * Uploads have their own HTTP timeout (`midgard.asgard.upload_timeout`, 150
+ * Uploads have their own HTTP timeout (`midgard.asgard.http_upload_timeout`, 150
  * seconds). The lane's own watchdog is set past it, so a slow upload ends
  * on the HTTP timeout and not on the lane's default 60 seconds.
  */

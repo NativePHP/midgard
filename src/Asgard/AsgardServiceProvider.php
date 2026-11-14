@@ -2,45 +2,68 @@
 
 namespace Native\Api\Client\Asgard;
 
+use Illuminate\Contracts\Http\Kernel as HttpKernel;
+use Illuminate\Support\Facades\Blade;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\ServiceProvider;
+use Native\Api\Client\Asgard\Concerns\UsesServer;
+use Native\Api\Client\Asgard\Contracts\FragmentSource;
+use Native\Api\Client\Asgard\Contracts\ServerTransport;
+use Native\Api\Client\Asgard\Contracts\UploadTransport;
 use Native\Api\Client\Asgard\Events\StreamClosed;
 use Native\Api\Client\Asgard\Events\StreamMessage;
 use Native\Api\Client\Asgard\Events\StreamOpened;
+use Native\Api\Client\Asgard\Http\OpensServerRoutes;
 use Native\Mobile\AsyncTask;
-use Native\Mobile\Edge\Asgard\Contracts\FragmentSource;
-use Native\Mobile\Edge\Asgard\Contracts\ServerTransport;
-use Native\Mobile\Edge\Asgard\Contracts\UploadTransport;
-use Native\Mobile\Edge\Asgard\ServerRegion;
-use Native\Mobile\Edge\NativeRouter;
+use Native\Mobile\Edge\ComponentMethodInvoker;
+use Native\Mobile\Edge\ElementRegistry;
+use Native\Mobile\Edge\NativeComponent;
 use Native\Mobile\Events\Screen\ScreenMounted;
+use Native\Mobile\Events\Screen\ScreenResumed;
+use Native\Mobile\Events\Screen\ScreenUnmounted;
 
 /**
- * Binds the HTTP fragment source, the HTTP `#[Server]` transport and the
- * HTTP upload transport when the
- * app runs nativephp/mobile and has an Asgard server and key configured.
- * Otherwise it does nothing: mobile's own null source keeps every region on
- * its placeholder, and its null transport fails every `#[Server]` call.
+ * Plugs Asgard into nativephp/mobile.
  *
- * With a server configured it also registers the server's screen routes:
- * the cached list at boot, and a fresh one fetched in the background once
- * the first screen has mounted (ServerRoutes).
+ * It hooks AsgardExtension into every screen's runloop, adds the
+ * `@server` / `@endserver` Blade directives and the `server_region`
+ * element they emit, keeps UsesServer's methods out of reach of templates
+ * and fragments, and on device opens server routes that arrive as
+ * requests (OpensServerRoutes).
+ *
+ * With an Asgard server and key configured it binds the HTTP fragment
+ * source, the HTTP `#[Server]` transport and the HTTP upload transport,
+ * and registers the server's screen routes: the cached list at boot, and
+ * a fresh one fetched in the background once the first screen has
+ * mounted (ServerRoutes). Without them it binds the null source and
+ * transports: every region keeps its placeholder and every `#[Server]`
+ * call fails as it would with no network.
  */
 class AsgardServiceProvider extends ServiceProvider
 {
+    /**
+     * One extension for the process. NativeComponent keeps its extensions
+     * statically, so a second app instance (each test boots one) must hand
+     * over the same object, which extend() then ignores.
+     */
+    protected static ?AsgardExtension $extension = null;
+
     public function register(): void
     {
         $this->mergeConfigFrom(__DIR__.'/../../config/midgard.php', 'midgard');
 
-        if (! interface_exists(FragmentSource::class)) {
-            return;
-        }
-
         $config = static::clientConfig();
 
         if ($config === null) {
+            // Defaults: a source that asks nobody and transports that fail
+            // every send. `bindIf`, so an app or a test that bound its own
+            // first keeps it.
+            $this->app->bindIf(FragmentSource::class, NullFragmentSource::class);
+            $this->app->bindIf(ServerTransport::class, NullServerTransport::class);
+            $this->app->bindIf(UploadTransport::class, NullUploadTransport::class);
+
             return;
         }
 
@@ -58,19 +81,17 @@ class AsgardServiceProvider extends ServiceProvider
 
         // Server screens: their routes come from the server, cached so they
         // work offline, and are fetched again in the background.
-        if (method_exists(NativeRouter::class, 'registerServerRoutes')) {
-            $this->app->singleton(ServerRoutes::class, fn () => new ServerRoutes(
-                Cache::store($config['store']),
-                ServerRoutes::keyFor($config['url'], $config['key']),
-                static fn (array $routes) => NativeRouter::registerServerRoutes($routes),
-                // The fetch is network, so it runs on an AsyncTask lane. Its
-                // answer is taken on whichever screen is showing by then.
-                static fn (\Closure $then) => AsyncTask::dispatch(self::routesWork($config))
-                    ->anyScreen()
-                    ->finished(fn ($result) => $then(is_array($result) ? $result : ['ok' => false, 'error' => 'no answer']))
-                    ->failed(fn (\Throwable $e) => $then(['ok' => false, 'error' => $e->getMessage()])),
-            ));
-        }
+        $this->app->singleton(ServerRoutes::class, fn () => new ServerRoutes(
+            Cache::store($config['store']),
+            ServerRoutes::keyFor($config['url'], $config['key']),
+            static fn (array $routes) => ServerScreen::registerRoutes($routes),
+            // The fetch is network, so it runs on an AsyncTask lane. Its
+            // answer is taken on whichever screen is showing by then.
+            static fn (\Closure $then) => AsyncTask::dispatch(self::routesWork($config))
+                ->anyScreen()
+                ->finished(fn ($result) => $then(is_array($result) ? $result : ['ok' => false, 'error' => 'no answer']))
+                ->failed(fn (\Throwable $e) => $then(['ok' => false, 'error' => $e->getMessage()])),
+        ));
 
         $this->app->singleton(FragmentSource::class, fn ($app) => new HttpFragmentSource(
             $config,
@@ -78,19 +99,30 @@ class AsgardServiceProvider extends ServiceProvider
         ));
 
         // #[Server] methods go to the same server, on AsyncTask lanes too.
-        if (interface_exists(ServerTransport::class)) {
-            $this->app->singleton(ServerTransport::class, fn () => new HttpServerTransport($config));
-        }
+        $this->app->singleton(ServerTransport::class, fn () => new HttpServerTransport($config));
 
         // So do uploads to #[Upload] methods, with their own timeout.
-        if (interface_exists(UploadTransport::class)) {
-            $this->app->singleton(UploadTransport::class, fn () => new HttpUploadTransport($config));
-        }
+        $this->app->singleton(UploadTransport::class, fn () => new HttpUploadTransport($config));
     }
 
     public function boot(): void
     {
         $this->publishes([__DIR__.'/../../config/midgard.php' => config_path('midgard.php')], 'midgard-config');
+
+        NativeComponent::extend(static::$extension ??= new AsgardExtension);
+
+        // UsesServer puts its plumbing on the app's own class. No template
+        // or fragment may name any of it.
+        ComponentMethodInvoker::reserveTrait(UsesServer::class);
+
+        // The container `@server(...)` opens. Registered as an element so
+        // `<native:*>` resolution and fragment validation both see it. It
+        // is only ever emitted by the directive.
+        ElementRegistry::register('server_region', Elements\ServerRegion::class);
+
+        $this->registerBladeDirectives();
+        $this->registerScreenListeners();
+        $this->registerServerRouteMiddleware();
 
         if ($this->app->bound(ServerRoutes::class)) {
             $routes = $this->app->make(ServerRoutes::class);
@@ -109,6 +141,69 @@ class AsgardServiceProvider extends ServiceProvider
             Event::listen(StreamOpened::class, fn (StreamOpened $event) => $streams()->opened($event));
             Event::listen(StreamClosed::class, fn (StreamClosed $event) => $streams()->closed($event));
         }
+    }
+
+    /**
+     * Asgard regions (protocol §3):
+     *
+     *     @server('sales-summary')
+     *         <x-skeleton-card />
+     *
+     *     @endserver
+     *
+     * open() emits the `server_region` node and returns whether the
+     * placeholder body should run. False means it already painted a
+     * fragment in its place. The body is guarded rather than always
+     * rendered because a fragment replaces the placeholder: rendering both
+     * and dropping one would run the placeholder's own Blade (and any
+     * component it mounts) for nothing.
+     */
+    protected function registerBladeDirectives(): void
+    {
+        Blade::directive('server', function ($expression) {
+            return "<?php if (\\Native\\Api\\Client\\Asgard\\ServerRegion::open({$expression})): ?>";
+        });
+
+        Blade::directive('endserver', function () {
+            return '<?php endif; \\Native\\Api\\Client\\Asgard\\ServerRegion::close(); ?>';
+        });
+    }
+
+    protected function registerScreenListeners(): void
+    {
+        // A server screen that gave up on its body left for another. Its
+        // event fires once that screen is the live one, so it hears it.
+        $failures = static function () {
+            foreach (ServerScreen::takeFailures() as $failure) {
+                ServerRegion::fire($failure);
+            }
+        };
+
+        Event::listen(ScreenMounted::class, $failures);
+        Event::listen(ScreenResumed::class, $failures);
+
+        // An unmounted screen's regions leave the push stream now, with its
+        // children's, rather than waiting for a frame that may not come.
+        Event::listen(ScreenUnmounted::class, fn () => ServerRegion::sync());
+    }
+
+    /**
+     * Server routes live only in NativeRouter, so a cold deep link or a
+     * hot-reload restore to one would 404 in Laravel's router. This opens
+     * them when no Laravel route claims the path.
+     *
+     * On device only: NATIVEPHP_PLATFORM is set by the iOS and Android
+     * hosts, so a normal web app never pays for this. Not gated on
+     * runningInConsole(), for the same reason nativephp/mobile gives for
+     * its own screen middleware.
+     */
+    protected function registerServerRouteMiddleware(): void
+    {
+        if (! in_array(env('NATIVEPHP_PLATFORM'), ['ios', 'android'], true)) {
+            return;
+        }
+
+        $this->app->make(HttpKernel::class)->pushMiddleware(OpensServerRoutes::class);
     }
 
     /**
@@ -137,8 +232,8 @@ class AsgardServiceProvider extends ServiceProvider
             'url' => $url,
             'path' => (string) config('midgard.asgard.path', '_asgard'),
             'key' => $key,
-            'timeout' => (float) config('midgard.asgard.timeout', 20),
-            'upload_timeout' => (float) config('midgard.asgard.upload_timeout', 150),
+            'timeout' => (float) config('midgard.asgard.http_timeout', 20),
+            'upload_timeout' => (float) config('midgard.asgard.http_upload_timeout', 150),
             'store' => is_string($store) && $store !== '' ? $store : null,
         ];
     }

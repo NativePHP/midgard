@@ -16,3 +16,6 @@ tests/tmp/
 
 # PHPUnit
 /.phpunit.cache
+
+# Scratch views the Asgard tests write
+tests/Asgard/views/

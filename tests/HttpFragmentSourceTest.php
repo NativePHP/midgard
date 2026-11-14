@@ -1,79 +1,131 @@
 <?php
 
-use Laravel\SerializableClosure\SerializableClosure;
+use Illuminate\Support\Facades\Event;
+use Native\Api\Client\Asgard\AsgardServiceProvider;
+use Native\Api\Client\Asgard\Contracts\FragmentSource;
+use Native\Api\Client\Asgard\Events\ServerActionFailed;
+use Native\Api\Client\Asgard\Events\ServerRegionFailed;
 use Native\Api\Client\Asgard\HttpFragmentSource;
-use Native\Mobile\AsyncTask;
-use Native\Mobile\Edge\Asgard\ActionRequest;
-use Native\Mobile\Edge\Asgard\RegionBatch;
-use Native\Mobile\Edge\Asgard\RegionRequest;
-use Native\Mobile\Edge\Asgard\ServerRegion;
-
-require_once __DIR__.'/Fixtures/AsgardRegionStandIns.php';
-require_once __DIR__.'/Fixtures/AsgardServerMethodStandIns.php';
+use Native\Api\Client\Asgard\RegionBatch;
+use Native\Api\Client\Asgard\ServerRegion;
+use Native\Api\Client\Asgard\Testing\Asgard;
+use Native\Api\Client\Tests\Fixtures\RegionPairScreen;
+use Native\Mobile\Testing\Native;
+use Native\Mobile\Testing\TestableComponent;
 
 // What the transport tells the device once a render call is over: the
-// fragment, or why there is none (protocol §10.2, §12.1).
+// fragment, or why there is none (protocol §10.2, §12.1). The requests are
+// real ones, made by a screen's first frame, so what HttpFragmentSource
+// hands to ServerRegion shows on that screen.
 beforeEach(function () {
-    // Only the stand-in records. With nativephp/mobile installed, skip.
-    if (! property_exists(ServerRegion::class, 'calls')) {
-        $this->markTestSkipped('nativephp/mobile is installed, so the stand-in is not in use.');
-    }
+    app('view')->addLocation(__DIR__.'/Fixtures/views');
 
-    ServerRegion::$calls = [];
-    AsyncTask::$dispatched = [];
+    $this->config = ['url' => 'https://a.test', 'path' => '_asgard', 'key' => 'k', 'timeout' => 5, 'store' => null];
+
+    $this->failures = [];
+    Event::listen(ServerRegionFailed::class, fn ($event) => $this->failures[] = $event);
+    Event::listen(ServerActionFailed::class, fn ($event) => $this->failures[] = $event);
 });
 
-it('delivers a fragment with its chrome and version', function () {
-    $request = new RegionRequest('region-1', 'promos.show', 'screen');
+/**
+ * A screen whose two regions were asked for in one batch, held by the fake
+ * source.
+ *
+ * @return array{0: TestableComponent, 1: RegionBatch}
+ */
+function regionsInFlight(): array
+{
+    $source = Asgard::fakeFragmentSource();
+    $screen = Native::test(RegionPairScreen::class);
 
-    HttpFragmentSource::answered($request, ['ok' => true, 'status' => 200, 'fragment' => ['type' => 'text'], 'chrome' => ['nav_bar' => []], 'version' => 'v1'], 'https://a.test/_asgard/render', 'region [screen]');
+    return [$screen, $source->lastBatch()];
+}
 
-    expect(ServerRegion::$calls)->toBe([['deliver', 'region-1', ['type' => 'text'], ['nav_bar' => []], 'v1', [], []]]);
+function text(string $text): array
+{
+    return ['type' => 'text', 'props' => ['text' => $text]];
+}
+
+it('delivers a fragment with its version', function () {
+    [$screen, $batch] = regionsInFlight();
+    $request = $batch->requests[0];
+
+    HttpFragmentSource::answered($request, ['ok' => true, 'status' => 200, 'fragment' => text('Ten sales'), 'version' => 'v1'], 'https://a.test/_asgard/render', 'region [stats]');
+
+    $screen->wait()->assertSee('Ten sales')->assertSee('Loading chart');
+
+    expect(ServerRegion::subscriptions()[0]['versions'] ?? null)->toBe(['stats' => 'v1']);
 });
 
 it('hands an action answer\'s other regions and hints to deliver', function () {
-    $request = new ActionRequest('action-1', 'app.home', 'stats', 'bump');
-    $fragments = ['greeting' => ['fragment' => ['type' => 'text'], 'version' => 'v2']];
-    $refresh = [['component' => 'app.inbox']];
+    [$screen, $batch] = regionsInFlight();
+    $source = Asgard::fakeFragmentSource();
+    $asked = count($source->requests('chart'));
 
-    HttpFragmentSource::answered($request, ['ok' => true, 'status' => 200, 'fragment' => ['type' => 'row'], 'fragments' => $fragments, 'refresh' => $refresh], 'https://a.test/_asgard/render', 'action [bump]');
+    $action = ServerRegion::action($screen->instance(), 'stats', 'bump', []);
+    $fragments = ['chart' => ['fragment' => text('A chart'), 'version' => 'v2']];
+    $refresh = [['component' => $action->component, 'region' => 'chart']];
 
-    expect(ServerRegion::$calls)->toBe([['deliver', 'action-1', ['type' => 'row'], null, null, $fragments, $refresh]]);
+    HttpFragmentSource::answered($action, ['ok' => true, 'status' => 200, 'fragment' => text('Bumped'), 'fragments' => $fragments, 'refresh' => $refresh], 'https://a.test/_asgard/render', 'action [bump]');
+
+    $screen->wait()->assertSee('Bumped')->assertSee('A chart');
+
+    // The hint asks for the region again after that frame.
+    expect($source->requests('chart'))->toHaveCount($asked + 1);
 });
 
 // ── Batches ─────────────────────────────────────────
 
-function batchOf(string ...$regions): RegionBatch
-{
-    return new RegionBatch(array_map(
-        fn (int $i, string $region) => new RegionRequest('region-'.($i + 1), 'app.home', $region, ['id' => 1]),
-        array_keys($regions),
-        $regions,
-    ));
-}
-
 it('sends a batch as one render request on a lane', function () {
-    $config = ['url' => 'https://a.test', 'path' => '_asgard', 'key' => 'k', 'timeout' => 5, 'store' => null];
+    [, $batch] = regionsInFlight();
+    holdLanes();
 
-    (new HttpFragmentSource($config))->batch($batch = batchOf('stats', 'chart'));
+    (new HttpFragmentSource($this->config))->batch($batch);
 
-    expect(AsyncTask::$dispatched)->toHaveCount(1);
+    expect(heldTasks())->toHaveCount(1)
+        ->and($batch->regions())->toBe(['stats', 'chart'])
+        ->and($batch->toArray())->toMatchArray(['regions' => ['stats', 'chart'], 'state' => ['id' => 1]]);
+});
 
-    (AsyncTask::$dispatched[0]->finished)(['ok' => true, 'status' => 200, 'fragments' => ['stats' => ['fragment' => []]]]);
-    (AsyncTask::$dispatched[0]->failed)(new RuntimeException('lane died'));
+it('paints every region a batch answer carries', function () {
+    [$screen, $batch] = regionsInFlight();
+    holdLanes();
 
-    expect(ServerRegion::$calls)->toBe([
-        ['deliverBatch', ['stats', 'chart'], ['stats' => ['fragment' => []]]],
-        ['failedBatch', ['stats', 'chart'], 'network', null, 'lane died'],
+    (new HttpFragmentSource($this->config))->batch($batch);
+    finishTask(lastTaskId(), ['ok' => true, 'status' => 200, 'fragments' => [
+        'stats' => ['fragment' => text('Ten sales')],
+        'chart' => ['fragment' => text('A chart')],
+    ]]);
+
+    $screen->wait()->assertSee('Ten sales')->assertSee('A chart');
+});
+
+it('fails every region of a batch whose lane died', function () {
+    [$screen, $batch] = regionsInFlight();
+    holdLanes();
+
+    (new HttpFragmentSource($this->config))->batch($batch);
+    failTask(lastTaskId(), new RuntimeException('lane died'));
+
+    $screen->wait();
+
+    expect(array_map(fn ($f) => [$f->region, $f->reason, $f->message], $this->failures))->toBe([
+        ['stats', 'network', 'lane died'],
+        ['chart', 'network', 'lane died'],
     ]);
-
-    expect($batch->toArray())->toBe(['component' => 'app.home', 'regions' => ['stats', 'chart'], 'state' => ['id' => 1], 'platform' => 'ios']);
 });
 
 it('fails every region of a batch whose answer failed', function (array $result, string $reason, ?int $status) {
-    HttpFragmentSource::answeredBatch(batchOf('stats', 'chart'), $result, 'https://a.test/_asgard/render', 'regions [stats, chart]');
+    [$screen, $batch] = regionsInFlight();
 
-    expect(ServerRegion::$calls)->toBe([['failedBatch', ['stats', 'chart'], $reason, $status, $result['error'] ?? 'no answer']]);
+    HttpFragmentSource::answeredBatch($batch, $result, 'https://a.test/_asgard/render', 'regions [stats, chart]');
+
+    $screen->wait();
+
+    expect(array_map(fn ($f) => [$f->region, $f->reason, $f->status, $f->message], $this->failures))->toBe([
+        ['stats', $reason, $status, $result['error'] ?? 'no answer'],
+        ['chart', $reason, $status, $result['error'] ?? 'no answer'],
+    ]);
 })->with([
     'no response' => [['ok' => false, 'status' => 0, 'error' => 'cURL error 28'], 'network', null],
     'a server error' => [['ok' => false, 'status' => 500, 'error' => 'invalid_fragment'], 'server', 500],
@@ -82,15 +134,18 @@ it('fails every region of a batch whose answer failed', function (array $result,
 ]);
 
 it('reports a failed answer with its reason and status', function (?array $result, string $reason, ?int $status) {
-    $request = new ActionRequest('action-2', 'app.home', 'stats', 'like');
+    [$screen] = regionsInFlight();
+    $action = ServerRegion::action($screen->instance(), 'stats', 'like', []);
 
-    HttpFragmentSource::answered($request, $result, 'https://a.test/_asgard/render', 'action [like]');
+    HttpFragmentSource::answered($action, $result, 'https://a.test/_asgard/render', 'action [like]');
 
-    expect(ServerRegion::$calls)->toHaveCount(1)
-        ->and(ServerRegion::$calls[0][0])->toBe('failed')
-        ->and(ServerRegion::$calls[0][1])->toBe('action-2')
-        ->and(ServerRegion::$calls[0][2])->toBe($reason)
-        ->and(ServerRegion::$calls[0][3])->toBe($status);
+    $screen->wait();
+
+    expect($this->failures)->toHaveCount(1)
+        ->and($this->failures[0])->toBeInstanceOf(ServerActionFailed::class)
+        ->and($this->failures[0]->requestId)->toBe($action->id)
+        ->and($this->failures[0]->reason)->toBe($reason)
+        ->and($this->failures[0]->status)->toBe($status);
 })->with([
     'no response' => [['ok' => false, 'status' => 0, 'error' => 'cURL error 28'], 'network', null],
     'a server error' => [['ok' => false, 'status' => 503, 'error' => 'unsigned response'], 'server', 503],
@@ -104,19 +159,32 @@ it('reports a failed answer with its reason and status', function (?array $resul
 ]);
 
 it('reports a render call that never came back as a network failure', function () {
-    $request = new RegionRequest('region-3', 'promos.show', 'screen');
+    [$screen, $batch] = regionsInFlight();
+    $request = $batch->requests[0];
 
-    HttpFragmentSource::lost($request, new RuntimeException('The async task did not complete within 60 seconds.'), 'region [screen]');
+    HttpFragmentSource::lost($request, new RuntimeException('The async task did not complete within 60 seconds.'), 'region [stats]');
 
-    expect(ServerRegion::$calls)->toBe([['failed', 'region-3', 'network', null, 'The async task did not complete within 60 seconds.']]);
+    $screen->wait();
+
+    expect(array_map(fn ($f) => [$f->region, $f->reason, $f->status, $f->message], $this->failures))
+        ->toBe([['stats', 'network', null, 'The async task did not complete within 60 seconds.']]);
 });
 
 it('ships the batch render to the lane, not the batch() around it', function () {
-    $config = ['url' => 'https://a.test', 'path' => '_asgard', 'key' => 'k', 'timeout' => 5, 'store' => null];
+    [, $batch] = regionsInFlight();
+    holdLanes();
 
-    (new HttpFragmentSource($config))->batch(batchOf('stats', 'chart'));
+    (new HttpFragmentSource($this->config))->batch($batch);
 
-    $code = serialize(new SerializableClosure(AsyncTask::$dispatched[0]->work));
+    expect(taskPayload(lastTaskId()))->toContain('RenderCall::send($config, $body)')->not->toContain('->finished(');
+});
 
-    expect($code)->toContain('RenderCall::send($config, $body)')->not->toContain('->finished(');
+it('is the bound source when an Asgard server is configured', function () {
+    config()->set('midgard.asgard.url', 'https://asgard.test');
+    config()->set('midgard.asgard.key', 'test-key');
+    app()->offsetUnset(FragmentSource::class);
+
+    (new AsgardServiceProvider(app()))->register();
+
+    expect(app(FragmentSource::class))->toBeInstanceOf(HttpFragmentSource::class);
 });

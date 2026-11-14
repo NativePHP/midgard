@@ -10,7 +10,7 @@
         }
     ],
     "require": {
-        "php": "^8.2",
+        "php": "^8.3",
         "ext-json": "*",
         "guzzlehttp/guzzle": "^7.9",
         "illuminate/auth": "^12.0|^13.0",
@@ -20,7 +20,8 @@
         "illuminate/support": "^12.0|^13.0",
         "illuminate/validation": "^12.0|^13.0",
         "lcobucci/jwt": "^5.3",
-        "league/oauth2-client": "^2.7"
+        "league/oauth2-client": "^2.7",
+        "nativephp/mobile": "dev-idea/asgard"
     },
     "require-dev": {
         "laravel/pint": "^1.18",
@@ -63,7 +64,10 @@
     },
     "minimum-stability": "stable",
     "prefer-stable": true,
-    "suggest": {
-        "nativephp/mobile": "Needed for Asgard: server-rendered regions and the native SSE stream"
-    }
+    "repositories": [
+        {
+            "type": "vcs",
+            "url": "https://github.com/NativePHP/mobile-air"
+        }
+    ]
 }
