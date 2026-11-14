@@ -349,7 +349,8 @@ class AsgardClient
         $hints = [];
 
         foreach ($refresh as $hint) {
-            if (! is_array($hint) || ! is_string($hint['component'] ?? null) || array_diff(array_keys($hint), ['component', 'region']) !== []) {
+            // Members other than these are ignored (§5.3).
+            if (! is_array($hint) || ! is_string($hint['component'] ?? null)) {
                 return null;
             }
 
@@ -357,7 +358,7 @@ class AsgardClient
                 return null;
             }
 
-            $hints[] = $hint;
+            $hints[] = array_intersect_key($hint, ['component' => true, 'region' => true]);
         }
 
         return $hints;

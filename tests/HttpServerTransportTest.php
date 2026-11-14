@@ -84,9 +84,15 @@ it('refuses an answer that is not a call answer', function (string $plaintext) {
     'empty fragments' => ['{"protocol":1,"delta":{},"fragments":{}}'],
     'a hint without a component' => ['{"protocol":1,"delta":{},"refresh":[{"region":"a"}]}'],
     'a hint with a number region' => ['{"protocol":1,"delta":{},"refresh":[{"component":"a","region":1}]}'],
-    'a hint with another member' => ['{"protocol":1,"delta":{},"refresh":[{"component":"a","state":{}}]}'],
     'refresh as an object' => ['{"protocol":1,"delta":{},"refresh":{"component":"a"}}'],
 ]);
+
+it('ignores members of a refresh hint it does not know', function () {
+    $this->server->plaintext = '{"protocol":1,"delta":{},"refresh":[{"component":"a","state":{},"region":"r"}]}';
+
+    expect($this->client->callMethod(HttpServerTransport::wireBody(serverRequest())))
+        ->toBe(['ok' => true, 'status' => 200, 'delta' => [], 'refresh' => [['component' => 'a', 'region' => 'r']]]);
+});
 
 it('handshakes again and retries once when the server lost the session', function () {
     $this->client->callMethod(HttpServerTransport::wireBody(serverRequest()));
