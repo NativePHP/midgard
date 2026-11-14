@@ -1,0 +1,59 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        # 8.3 is the minimum composer.json allows.
+        php: [8.3, 8.4]
+
+    name: Tests - PHP ${{ matrix.php }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          extensions: dom, simplexml, mbstring, openssl, sodium
+          coverage: none
+
+      # composer.lock is not committed, so this resolves fresh each run,
+      # including nativephp/mobile from mobile-air's idea/asgard branch.
+      - name: Install dependencies
+        run: composer update --no-interaction --prefer-dist
+
+      - name: Run tests
+        run: vendor/bin/pest
+
+  code-style:
+    runs-on: ubuntu-latest
+
+    name: Code Style
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: 8.4
+          extensions: dom, simplexml, mbstring
+          coverage: none
+
+      - name: Install dependencies
+        run: composer update --no-interaction --prefer-dist
+
+      - name: Run Pint
+        run: vendor/bin/pint --test
