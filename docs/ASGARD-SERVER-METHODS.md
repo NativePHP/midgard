@@ -181,6 +181,30 @@ A subclass keeps its parent's local-only props, even one it declares again.
 Private and protected props are never sent anyway, so the attribute is only
 for public ones.
 
+### 2.2 Computed values are state too
+
+A component's `#[Computed]` values go up with its props, under the name its
+views read them by: `revenue()` is sent as `revenue`, as `$this->revenue`
+reads it. The server sees an ordinary state key. Each one is worked out again
+for every send by calling the method, never taken from the memo of the last
+render, so it always matches the props it travels with. Only the list of
+computed names is cached, per class.
+
+They are read-only. A delta that names one is ignored on the device and
+logged under debug, like a local-only prop, and the rest still applies. Mark
+the method `#[LocalOnly]` to keep its value on the phone. A public prop of the
+same name wins, since that is what `$this->name` reads.
+
+A computed value that throws, or that JSON cannot carry at all (a closure, a
+resource), is left out of that send and logged under debug. The send still
+goes. An object travels as an object prop does: encoded on a call or upload,
+dropped from a region request, which only carries plain values.
+
+On the Asgard server, state keys with no matching public prop are ignored
+(logged when `app.debug` is on). A server component that wants a computed
+value declares a public typed prop of the same name and gets it hydrated like
+any other state.
+
 ## 3. The request runs off the UI thread
 
 PHP on device runs a blocking runloop: it waits on `nativephp_element_wait_event()`,

@@ -741,6 +741,19 @@ class ServerMethods
                 continue;
             }
 
+            // A #[Computed] value is sent as state but worked out on the
+            // device, so it is read-only. Neither the method nor its memo
+            // is touched.
+            if (ComponentState::isComputed($component, $prop)) {
+                NativeRouter::debugLog(
+                    'Asgard: delta prop ['.$prop.'] is #[Computed] on '.$component::class.' — read-only, ignored.'
+                );
+
+                $refused[$prop] = $value;
+
+                continue;
+            }
+
             // Drift: the server changed a prop this half does not have.
             // Silently ignored the way §5.3 ignores a field present on
             // one side only, but reported on the response rather than
