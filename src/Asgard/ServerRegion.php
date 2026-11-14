@@ -1199,7 +1199,7 @@ class ServerRegion
         static::$watching = $shape;
 
         try {
-            app(FragmentSource::class)->watch($subscriptions, static::platform());
+            app(FragmentSource::class)->watch($subscriptions);
         } catch (\Throwable $e) {
             NativeRouter::debugLog('Asgard: the push stream set could not be handed over: '.$e->getMessage());
         }
@@ -1447,7 +1447,6 @@ class ServerRegion
             component: ComponentAddress::for($owner),
             region: $region,
             state: static::stateOf($owner),
-            platform: static::platform(),
             call: $call,
             args: array_values($args),
             componentClass: $owner::class,
@@ -1491,12 +1490,14 @@ class ServerRegion
 
     /**
      * The state a component sends (ComponentState), kept to what JSON can
-     * carry (see RegionRequest).
+     * carry (see RegionRequest). A server screen sends its route parameters
+     * instead of its props, and the app-wide keys from `midgard.asgard.state`
+     * are added to those too.
      */
     public static function stateOf(NativeComponent $component): array
     {
         if ($component instanceof Contracts\AddressedComponent) {
-            return array_filter($component->asgardState(), static::jsonSafe(...));
+            return array_filter(ComponentState::withConfigured($component->asgardState()), static::jsonSafe(...));
         }
 
         return array_filter(ComponentState::of($component), static::jsonSafe(...));
@@ -1603,7 +1604,6 @@ class ServerRegion
                 component: ComponentAddress::for($owner),
                 region: $region,
                 state: $state,
-                platform: static::platform(),
                 componentClass: $owner::class,
             );
 
@@ -1804,9 +1804,9 @@ class ServerRegion
     }
 
     /**
-     * The platform the request is rendered for. Off a device (tests, a
-     * web server) System reports none, and the request says `unknown`
-     * rather than guessing. Public so a `#[Server]` call says the same.
+     * The platform the app runs on, `ios` or `android`. Off a device (tests,
+     * a web server) System reports none, and this says `unknown` rather than
+     * guessing. The default `midgard.asgard.state` sends it as `platform`.
      */
     public static function platform(): string
     {

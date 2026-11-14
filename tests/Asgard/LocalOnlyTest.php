@@ -19,6 +19,8 @@ use Native\Mobile\Testing\Native;
  * frame asks for both in one batch.
  */
 beforeEach(function () {
+    // Only the component's own state here. ConfiguredStateTest covers midgard.asgard.state.
+    config(['midgard.asgard.state' => []]);
     app('view')->addLocation(__DIR__.'/Fixtures/views');
     ServerRegion::flush();
     ServerMethods::flush();

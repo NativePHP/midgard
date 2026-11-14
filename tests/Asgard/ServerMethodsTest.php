@@ -78,11 +78,12 @@ it('sends the method, its arguments and state, and nothing else', function () {
 
     $body = $server->lastRequest()->toArray();
 
-    expect(array_keys($body))->toBe(['component', 'method', 'args', 'state', 'platform']);
+    expect(array_keys($body))->toBe(['component', 'method', 'args', 'state']);
 
-    // Off a device System reports no platform, and the request says so
-    // rather than guessing, as a region request does.
-    expect($body['platform'])->toBe('unknown');
+    // The platform is in the state, from the default midgard.asgard.state.
+    // Off a device System reports none, and the request says so rather
+    // than guessing, as a region request does.
+    expect($body['state']['platform'])->toBe('unknown');
 
     // The closure is a PHP value held on the device: never serialised,
     // inspected or transmitted. If one had leaked into the request, this

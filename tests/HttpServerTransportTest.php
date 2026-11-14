@@ -27,7 +27,7 @@ beforeEach(function () {
 
 function serverRequest(array $state = ['rolling' => true]): ServerRequest
 {
-    return new ServerRequest('app.native.screens.home', 'roll', [], $state, 'ios');
+    return new ServerRequest('app.native.screens.home', 'roll', [], $state);
 }
 
 // ── The client call ─────────────────────────────────
@@ -45,7 +45,6 @@ it('sends a sealed call with a nonce and hands back the delta', function () {
             'method' => 'roll',
             'args' => [],
             'state' => ['rolling' => true],
-            'platform' => 'ios',
         ]);
 });
 
@@ -116,7 +115,7 @@ it('reports a refused call with its status', function () {
 // ── The wire body ───────────────────────────────────
 
 it('turns the request into plain JSON data', function () {
-    $body = HttpServerTransport::wireBody(new ServerRequest('app.home', 'save', [1.0, 'x'], ['box' => (object) ['a' => 1], 'empty' => []], 'android'));
+    $body = HttpServerTransport::wireBody(new ServerRequest('app.home', 'save', [1.0, 'x'], ['box' => (object) ['a' => 1], 'empty' => []]));
 
     expect($body)->toBe([
         'protocol' => 1,
@@ -124,7 +123,6 @@ it('turns the request into plain JSON data', function () {
         'method' => 'save',
         'args' => [1.0, 'x'],
         'state' => ['box' => ['a' => 1], 'empty' => []],
-        'platform' => 'android',
     ]);
 });
 

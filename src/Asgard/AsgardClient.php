@@ -46,6 +46,20 @@ class AsgardClient
         419 => ['session_expired'],
     ];
 
+    /**
+     * Header names the app may not set through `midgard.asgard.headers`,
+     * lowercase. The transport sets these itself, the signature covers
+     * them, or a server reads them as the method to run.
+     */
+    public const RESERVED_HEADERS = [
+        'accept', 'authorization', 'connection', 'cookie', 'host', 'last-event-id',
+        'signature', 'signature-input', 'transfer-encoding',
+        'x-http-method', 'x-http-method-override', 'x-method-override',
+    ];
+
+    /** Every header name starting with one of these is reserved too. */
+    public const RESERVED_HEADER_PREFIXES = ['content-', 'asgard-', 'x-asgard-'];
+
     protected TransportMemory $transport;
 
     /** @var list<string> */
@@ -53,6 +67,7 @@ class AsgardClient
 
     /**
      * @param  list<string>|null  $elements  The extra element types to advertise. Null asks mobile's registry.
+     * @param  array<string, string>|null  $headers  Extra headers for every request, already resolved. Null reads `midgard.asgard.headers` at each request.
      */
     public function __construct(
         protected string $base,
@@ -63,6 +78,7 @@ class AsgardClient
         protected float $uploadTimeout = 150,
         ?TransportMemory $transport = null,
         ?array $elements = null,
+        protected ?array $headers = null,
     ) {
         $this->transport = $transport ?? new TransportMemory(Cache::store('array'), TransportMemory::keyFor($base));
         $this->elements = $elements ?? self::advertisedElements();
@@ -71,7 +87,11 @@ class AsgardClient
     /**
      * Build one from plain config, as an AsyncTask lane must.
      *
-     * @param  array{base: string, key: string, timeout: float, store: ?string, upload_timeout?: float, elements?: list<string>}  $config
+     * `headers` are the app's extra headers as they were when the request
+     * was built (configuredHeaders()). Without them the client reads the
+     * config itself at each request.
+     *
+     * @param  array{base: string, key: string, timeout: float, store: ?string, upload_timeout?: float, elements?: list<string>, headers?: array<string, string>}  $config
      */
     public static function make(array $config, ?ClientInterface $http = null): self
     {
@@ -86,7 +106,91 @@ class AsgardClient
             (float) ($config['upload_timeout'] ?? 150),
             new TransportMemory($store, TransportMemory::keyFor($config['base'])),
             $config['elements'] ?? null,
+            $config['headers'] ?? null,
         );
+    }
+
+    /**
+     * The app's extra headers from `midgard.asgard.headers`, worked out now.
+     *
+     * A value may be a closure or a `[Class::class, 'method']` callable,
+     * called with no arguments, like a `midgard.asgard.state` value. A
+     * callable that gives null leaves the header out of this request.
+     *
+     * Throws on a name that is not a header name, on one the transport or
+     * the protocol already uses (RESERVED_HEADERS and
+     * RESERVED_HEADER_PREFIXES), and on a value that is not a string or
+     * number or has a line break in it.
+     *
+     * @return array<string, string>
+     */
+    public static function configuredHeaders(): array
+    {
+        $config = config('midgard.asgard.headers', []);
+
+        if ($config === null) {
+            return [];
+        }
+
+        if (! is_array($config)) {
+            throw new \InvalidArgumentException('midgard.asgard.headers must be an array of header name => value.');
+        }
+
+        $headers = [];
+
+        foreach ($config as $name => $value) {
+            $name = (string) $name;
+            $lower = strtolower($name);
+
+            if (preg_match("/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/D", $name) !== 1) {
+                throw new \InvalidArgumentException("midgard.asgard.headers [{$name}] is not a header name.");
+            }
+
+            if (self::reservedHeader($lower)) {
+                throw new \InvalidArgumentException(
+                    "midgard.asgard.headers cannot set [{$name}]: Asgard's transport sets it, signs it or reads it itself."
+                );
+            }
+
+            if ($value instanceof \Closure || (is_array($value) && is_callable($value))) {
+                $value = $value();
+            }
+
+            if ($value === null) {
+                continue;
+            }
+
+            if (! is_string($value) && ! is_int($value) && ! is_float($value)) {
+                throw new \InvalidArgumentException("midgard.asgard.headers [{$name}] must be a string, got a ".get_debug_type($value).'.');
+            }
+
+            $value = (string) $value;
+
+            if (preg_match('/[\r\n\0]/', $value) === 1) {
+                throw new \InvalidArgumentException("midgard.asgard.headers [{$name}] has a line break in it.");
+            }
+
+            $headers[$name] = $value;
+        }
+
+        return $headers;
+    }
+
+    protected static function reservedHeader(string $lower): bool
+    {
+        foreach (self::RESERVED_HEADER_PREFIXES as $prefix) {
+            if (str_starts_with($lower, $prefix)) {
+                return true;
+            }
+        }
+
+        return in_array($lower, self::RESERVED_HEADERS, true);
+    }
+
+    /** The extra headers for the request about to go out. */
+    public function extraHeaders(): array
+    {
+        return $this->headers ?? self::configuredHeaders();
     }
 
     public function endpoint(string $name): string
@@ -150,7 +254,7 @@ class AsgardClient
                     'elements' => $this->elements,
                     'client_public' => Base64Url::encode($public),
                 ], JSON_THROW_ON_ERROR),
-                'headers' => ['Content-Type' => 'application/json', 'Accept' => 'application/json'],
+                'headers' => $this->extraHeaders() + ['Content-Type' => 'application/json', 'Accept' => 'application/json'],
             ]);
         } catch (GuzzleException $e) {
             throw new AsgardException('Handshake failed: '.$e->getMessage(), 0);
@@ -570,7 +674,7 @@ class AsgardClient
         try {
             $response = $this->http()->request($form, $endpoint, [
                 'body' => $sealed['body'],
-                'headers' => $sealed['headers'] + ['accept' => 'application/json'],
+                'headers' => $sealed['headers'] + ['accept' => 'application/json'] + $this->extraHeaders(),
             ] + ($timeout === null ? [] : ['timeout' => $timeout]));
         } catch (GuzzleException $e) {
             return [null, ['ok' => false, 'status' => 0, 'error' => $e->getMessage()]];

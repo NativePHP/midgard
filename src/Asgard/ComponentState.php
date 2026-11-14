@@ -30,6 +30,11 @@ use ReflectionProperty;
  * Public only, and that is a boundary rather than a convenience: the
  * `native*` internals a component keeps protected never leave the device,
  * and a delta can never reach them, whatever a server puts in it.
+ *
+ * The app-wide keys in `midgard.asgard.state` are added to every
+ * component's state (configured()). They are not props, so a delta cannot
+ * set them either. A component's own prop or computed of the same name
+ * wins: its value is what goes, under that key.
  */
 class ComponentState
 {
@@ -41,6 +46,9 @@ class ComponentState
 
     /** @var array<class-string, array<string, ReflectionMethod>> */
     protected static array $computed = [];
+
+    /** What a configured key must look like: a PHP property name, as every other state key is. */
+    public const KEY_PATTERN = '/^[A-Za-z_][A-Za-z0-9_]{0,99}$/D';
 
     /**
      * The values the component sends now. An uninitialised typed prop is
@@ -85,7 +93,116 @@ class ComponentState
             $state[$name] = $value;
         }
 
+        return static::withConfigured($state);
+    }
+
+    /**
+     * A component's own state with the configured keys added. Its own keys
+     * win: a configured key it already sends is left as the component has
+     * it.
+     */
+    public static function withConfigured(array $state): array
+    {
+        return $state + static::configured();
+    }
+
+    /**
+     * The keys from `midgard.asgard.state`, with their values worked out now,
+     * as each request is built.
+     *
+     * A value may be a closure, or a `[Class::class, 'method']` callable,
+     * which is called with no arguments. The callable array is the one to
+     * use in config/midgard.php, because a closure there stops
+     * `php artisan config:cache` working, and NativePHP runs that on the
+     * device. Anything else is sent as it is.
+     *
+     * A key that is not a property name, or a value JSON cannot carry as
+     * plain data (an object, a resource, NaN), is a mistake in the app's
+     * config and throws rather than being left out quietly.
+     *
+     * @return array<string, mixed>
+     */
+    public static function configured(): array
+    {
+        $config = config('midgard.asgard.state', []);
+
+        if ($config === null) {
+            return [];
+        }
+
+        if (! is_array($config)) {
+            throw new \InvalidArgumentException('midgard.asgard.state must be an array of key => value.');
+        }
+
+        $state = [];
+
+        foreach ($config as $key => $value) {
+            if (! is_string($key) || preg_match(self::KEY_PATTERN, $key) !== 1) {
+                throw new \InvalidArgumentException(
+                    'midgard.asgard.state key ['.$key.'] is not a property name. Keys are letters, digits and underscores, '
+                    .'starting with a letter or underscore, at most 100 characters.'
+                );
+            }
+
+            if (static::resolvable($value)) {
+                $value = $value();
+            }
+
+            if (! static::plain($value)) {
+                throw new \InvalidArgumentException(
+                    'midgard.asgard.state ['.$key.'] is a '.get_debug_type($value).'. A value must be a scalar, '
+                    .'null or an array of those, and a float must be finite.'
+                );
+            }
+
+            $state[$key] = $value;
+        }
+
         return $state;
+    }
+
+    /** Whether a name is a configured key, which a delta cannot set. */
+    public static function isConfigured(string $name): bool
+    {
+        $config = config('midgard.asgard.state', []);
+
+        return is_array($config) && array_key_exists($name, $config);
+    }
+
+    /** A closure, or a list of a class name and one of its static methods. */
+    protected static function resolvable(mixed $value): bool
+    {
+        if ($value instanceof \Closure) {
+            return true;
+        }
+
+        return is_array($value) && array_is_list($value) && count($value) === 2
+            && is_string($value[0]) && is_string($value[1])
+            && class_exists($value[0]) && is_callable($value);
+    }
+
+    /** Scalars, null and arrays of those, with no NaN or infinity. */
+    protected static function plain(mixed $value, int $depth = 0): bool
+    {
+        if (is_float($value)) {
+            return is_finite($value);
+        }
+
+        if ($value === null || is_scalar($value)) {
+            return true;
+        }
+
+        if (! is_array($value) || $depth >= 32) {
+            return false;
+        }
+
+        foreach ($value as $item) {
+            if (! static::plain($item, $depth + 1)) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /**

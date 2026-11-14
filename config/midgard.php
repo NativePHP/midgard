@@ -1,5 +1,7 @@
 <?php
 
+use Native\Api\Client\Asgard\ServerRegion;
+
 return [
 
     /*
@@ -72,6 +74,50 @@ return [
         // server has its own limit too. The whole file is held in memory
         // while it is sealed, so keep it modest.
         'upload_max' => (int) env('NATIVEPHP_ASGARD_UPLOAD_MAX', 20 * 1024 * 1024),
+
+        // Extra state sent with every Asgard request: region renders and
+        // batches, server actions, #[Server] calls, uploads and each push
+        // stream subscription. The protocol has no field for the platform,
+        // app version or anything else about the app, so send what the
+        // server should know here. A server component reads a key through a
+        // public property of the same name, like any other state.
+        //
+        // Keys are property names: letters, digits and underscores, not
+        // starting with a digit. Values are scalars, null or arrays of
+        // those. A value may also be a callable, called each time a request
+        // is built: use [SomeClass::class, 'staticMethod'] rather than a
+        // closure, because a closure here stops `php artisan config:cache`
+        // working, and NativePHP runs that on the device.
+        //
+        // A component's own public prop or #[Computed] of the same name
+        // wins, and its value is sent instead. These keys are not props of
+        // the component, so a server delta that names one is ignored.
+        //
+        // They are part of the state, so they are part of what a shared
+        // push region is cached by. Keep the values stable: a region asks
+        // the server again when its state changes.
+        'state' => [
+            'platform' => [ServerRegion::class, 'platform'],
+        ],
+
+        // Extra HTTP headers sent with every Asgard request, the push stream
+        // and the session handshake included. A value may be a string or a
+        // callable, as for `state` above. A callable that gives null leaves
+        // the header out.
+        //
+        // TLS covers these, but the protocol's body encryption and signature
+        // do not, so do not use them for anything the encryption is meant to
+        // protect. A shared push region is cached without them, so it must
+        // not depend on one: send it in `state` instead.
+        //
+        // Names the transport or the protocol already uses are refused with
+        // an exception: Accept, Authorization, Connection, Content-*,
+        // Cookie, Host, Last-Event-ID, Signature, Signature-Input,
+        // Transfer-Encoding, the method override headers and anything
+        // starting Asgard- or X-Asgard-.
+        'headers' => [
+            // 'X-App-Version' => '1.4.0',
+        ],
 
         // The class every server route opens. Set it to your own subclass of
         // Native\Api\Client\Asgard\ServerScreen to change its skeleton or

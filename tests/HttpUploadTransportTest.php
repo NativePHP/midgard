@@ -38,7 +38,7 @@ afterEach(function () {
 
 function uploadRequest(string $path, int $size, array $state = ['name' => 'Simon']): UploadRequest
 {
-    return new UploadRequest('app.native.screens.home', 'savePhoto', ['Sunset'], $state, 'ios', $path, 'IMG_0001.jpg', 'image/jpeg', $size);
+    return new UploadRequest('app.native.screens.home', 'savePhoto', ['Sunset'], $state, $path, 'IMG_0001.jpg', 'image/jpeg', $size);
 }
 
 // ── The client call ─────────────────────────────────
@@ -59,7 +59,6 @@ it('sends a sealed frame with a nonce and hands back the delta', function () {
             'method' => 'savePhoto',
             'args' => ['Sunset'],
             'state' => ['name' => 'Simon'],
-            'platform' => 'ios',
             'filename' => 'IMG_0001.jpg',
             'mime' => 'image/jpeg',
             'size' => strlen($this->bytes),

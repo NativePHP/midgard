@@ -84,7 +84,7 @@ it('sends a batch as one render request on a lane', function () {
 
     expect(heldTasks())->toHaveCount(1)
         ->and($batch->regions())->toBe(['stats', 'chart'])
-        ->and($batch->toArray())->toMatchArray(['regions' => ['stats', 'chart'], 'state' => ['id' => 1]]);
+        ->and($batch->toArray())->toMatchArray(['regions' => ['stats', 'chart'], 'state' => ['id' => 1, 'platform' => 'unknown']]);
 });
 
 it('paints every region a batch answer carries', function () {

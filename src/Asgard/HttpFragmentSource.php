@@ -76,7 +76,7 @@ class HttpFragmentSource implements FragmentSource
 
     public function batch(RegionBatch $batch): void
     {
-        $config = $this->config;
+        $config = $this->config();
         $endpoint = $this->endpoint('render');
         $body = ['protocol' => 1, ...$batch->toArray()];
         $what = 'regions ['.implode(', ', $batch->regions()).']';
@@ -91,14 +91,20 @@ class HttpFragmentSource implements FragmentSource
             });
     }
 
-    public function watch(array $subscriptions, string $platform): void
+    /** The lane's config, with the app's extra headers as they are now. */
+    protected function config(): array
     {
-        $this->streams?->watch($subscriptions, $platform);
+        return ['headers' => AsgardClient::configuredHeaders()] + $this->config;
+    }
+
+    public function watch(array $subscriptions): void
+    {
+        $this->streams?->watch($subscriptions);
     }
 
     protected function send(RegionRequest $request): void
     {
-        $config = $this->config;
+        $config = $this->config();
         $endpoint = $this->endpoint('render');
         // The wire body (protocol §9) leaves the protocol version to the transport.
         $body = ['protocol' => 1, ...$request->toArray()];

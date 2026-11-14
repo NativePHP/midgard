@@ -68,5 +68,5 @@ interface FragmentSource
     /**
      * @param  list<array{id: string, component: string, regions: list<string>, state: array, versions: array<string, string>}>  $subscriptions
      */
-    public function watch(array $subscriptions, string $platform): void;
+    public function watch(array $subscriptions): void;
 }

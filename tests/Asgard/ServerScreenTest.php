@@ -17,6 +17,8 @@ use Native\Mobile\Testing\TestableComponent;
  * with each answer.
  */
 beforeEach(function () {
+    // Only the component's own state here. ConfiguredStateTest covers midgard.asgard.state.
+    config(['midgard.asgard.state' => []]);
     NativeRouter::clearRoutes();
     ServerRegion::flush();
     ServerScreen::flushChrome();
@@ -146,6 +148,15 @@ it('shows a skeleton and asks for its body under its own address with route stat
     expect($request->component)->toBe('promos.show')
         ->and(ComponentAddress::for($screen->instance()))->toBe('promos.show')
         ->and($request->state)->toBe(['ref' => 'mail', 'id' => '42']);
+});
+
+it('adds midgard.asgard.state to a server screen\'s route state, and a route parameter wins', function () {
+    config(['midgard.asgard.state' => ['platform' => 'ios', 'id' => 'from-config']]);
+    $source = Asgard::fakeFragmentSource();
+
+    Native::visit('/promos/42?ref=mail');
+
+    expect($source->lastRequest('screen')->state)->toBe(['ref' => 'mail', 'id' => '42', 'platform' => 'ios']);
 });
 
 it('paints the body when the answer lands', function () {

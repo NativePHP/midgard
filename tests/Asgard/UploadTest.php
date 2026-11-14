@@ -64,7 +64,7 @@ it('sends the file with the state as it is now', function () {
         ->and($request->filename)->toBe('IMG_0001.JPG')
         ->and($request->mime)->toBe('image/jpeg')
         ->and($request->size)->toBe(2048)
-        ->and($request->toArray())->toHaveKeys(['component', 'method', 'args', 'state', 'platform', 'filename', 'mime', 'size'])
+        ->and($request->toArray())->toHaveKeys(['component', 'method', 'args', 'state', 'filename', 'mime', 'size'])
         ->and($request->toArray())->not->toHaveKey('path');
 
     $server->assertUploaded('savePhoto', fn (UploadRequest $r) => $r->size === 2048);

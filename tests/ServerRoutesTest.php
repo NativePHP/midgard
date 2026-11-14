@@ -62,14 +62,14 @@ it('refuses a malformed route list', function (string $plaintext) {
 it('hands back chrome with a fragment', function () {
     $this->server->chrome = ['nav_bar' => ['title' => 'Promo']];
 
-    expect($this->client->render(['protocol' => 1, 'component' => 'promos.show', 'region' => 'screen', 'state' => [], 'platform' => 'ios']))
+    expect($this->client->render(['protocol' => 1, 'component' => 'promos.show', 'region' => 'screen', 'state' => []]))
         ->toMatchArray(['ok' => true, 'chrome' => ['nav_bar' => ['title' => 'Promo']]]);
 });
 
 it('refuses chrome that is not an object', function () {
     $this->server->plaintext = '{"protocol":1,"region":"screen","fragment":[],"chrome":"x"}';
 
-    expect($this->client->render(['protocol' => 1, 'component' => 'promos.show', 'region' => 'screen', 'state' => [], 'platform' => 'ios']))
+    expect($this->client->render(['protocol' => 1, 'component' => 'promos.show', 'region' => 'screen', 'state' => []]))
         ->toMatchArray(['ok' => false]);
 });
 

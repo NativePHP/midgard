@@ -77,6 +77,9 @@ class FakeAsgardServer
     /** The method of every request, handshakes included. */
     public array $methods = [];
 
+    /** The headers of every request, handshakes included, with lowercase names. */
+    public array $headers = [];
+
     public function __construct(public string $key = 'test-key') {}
 
     public function client(): Client
@@ -91,6 +94,7 @@ class FakeAsgardServer
     protected function dispatch(RequestInterface $r): PromiseInterface
     {
         $this->methods[] = $r->getMethod();
+        $this->headers[] = array_change_key_case(array_map(fn (array $values) => implode(', ', $values), $r->getHeaders()));
 
         if (! str_ends_with($r->getUri()->getPath(), '/session')) {
             $block = $r->getMethod() === 'QUERY' ? $this->blockQuery : ($r->getMethod() === 'POST' ? $this->blockPost : null);

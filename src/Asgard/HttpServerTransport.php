@@ -44,7 +44,9 @@ class HttpServerTransport implements ServerTransport
         $endpoint = rtrim($this->config['base'], '/').'/call';
         $what = "#[Server] {$request->component}::{$request->method}()";
 
-        $task = AsyncTask::dispatch(self::callWork($this->config, $body))
+        $config = ['headers' => AsgardClient::configuredHeaders()] + $this->config;
+
+        $task = AsyncTask::dispatch(self::callWork($config, $body))
             ->anyScreen()
             // Named, not static::, as a callback may be bound to a screen.
             ->finished(static function ($result) use ($id, $endpoint, $what) {

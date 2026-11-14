@@ -137,7 +137,7 @@ it('keeps a source the app bound before this provider registered', function () {
 
         public function batch(RegionBatch $batch): void {}
 
-        public function watch(array $subscriptions, string $platform): void {}
+        public function watch(array $subscriptions): void {}
     };
 
     app()->forgetInstance(FragmentSource::class);
@@ -174,7 +174,7 @@ it('keeps the screen up when the source throws', function () {
 
         public function batch(RegionBatch $batch): void {}
 
-        public function watch(array $subscriptions, string $platform): void {}
+        public function watch(array $subscriptions): void {}
     });
 
     Native::test(FragmentSourceScreen::class)
@@ -185,7 +185,7 @@ it('keeps the screen up when the source throws', function () {
 
 // ── What a request carries ──────────────────────────
 
-it('carries the component address, region, JSON-safe state and platform', function () {
+it('carries the component address, region and JSON-safe state, with the platform in it', function () {
     $source = Asgard::fakeFragmentSource();
 
     Native::test(FragmentSourceScreen::class, platform: 'ios');
@@ -195,7 +195,6 @@ it('carries the component address, region, JSON-safe state and platform', functi
     expect($request->component)->toBe(ComponentAddress::for(FragmentSourceScreen::class));
     expect($request->component)->toBe('native.api.client.tests.asgard.fixtures.fragment_source_screen');
     expect($request->region)->toBe('sales-summary');
-    expect($request->platform)->toBe('ios');
     expect($request->componentClass)->toBe(FragmentSourceScreen::class);
 
     expect($request->state)->toBe([
@@ -204,6 +203,7 @@ it('carries the component address, region, JSON-safe state and platform', functi
         'note' => null,
         'filters' => ['region' => 'eu', 'tags' => ['a', 'b']],
         'withChild' => false,
+        'platform' => 'ios',
     ]);
 
     // The wire body has no class name and no local id.
@@ -211,7 +211,6 @@ it('carries the component address, region, JSON-safe state and platform', functi
         'component' => 'native.api.client.tests.asgard.fixtures.fragment_source_screen',
         'region' => 'sales-summary',
         'state' => $request->state,
-        'platform' => 'ios',
     ]);
     expect(json_encode($request->toArray(), JSON_THROW_ON_ERROR))->toBeString();
 });
@@ -224,17 +223,17 @@ it('skips an uninitialised typed prop rather than reading it', function () {
         public int $count = 3;
     };
 
-    expect(ServerRegion::stateOf($component))->toBe(['count' => 3]);
+    expect(ServerRegion::stateOf($component))->toBe(['count' => 3, 'platform' => ServerRegion::platform()]);
 });
 
-it('reports android, and unknown off a device', function () {
+it('sends android in the state, and unknown off a device', function () {
     $source = Asgard::fakeFragmentSource();
 
     Native::test(FragmentSourceScreen::class, platform: 'android');
-    expect($source->lastRequest()->platform)->toBe('android');
+    expect($source->lastRequest()->state['platform'])->toBe('android');
 
     Native::test(FragmentSourceScreen::class);
-    expect($source->lastRequest()->platform)->toBe('unknown');
+    expect($source->lastRequest()->state['platform'])->toBe('unknown');
 });
 
 // ── Delivery repaints ───────────────────────────────
@@ -261,7 +260,7 @@ it('repaints when the fragment arrives through an AsyncTask completion', functio
 
         public function batch(RegionBatch $batch): void {}
 
-        public function watch(array $subscriptions, string $platform): void {}
+        public function watch(array $subscriptions): void {}
     });
 
     $screen = Native::test(FragmentSourceScreen::class)->assertSee('Loading sales…');
@@ -287,7 +286,7 @@ it('flags a repaint for a fragment that lands outside an event, until the next f
 
         public function batch(RegionBatch $batch): void {}
 
-        public function watch(array $subscriptions, string $platform): void {}
+        public function watch(array $subscriptions): void {}
     });
 
     $screen = Native::test(FragmentSourceScreen::class);
@@ -326,7 +325,7 @@ it('requests and delivers a child component region as the child', function () {
 
     $child = collect($requests)->firstWhere('componentClass', FragmentSourceChild::class);
     expect($child->component)->toBe('native.api.client.tests.asgard.fixtures.fragment_source_child');
-    expect($child->state)->toBe(['label' => 'orders']);
+    expect($child->state)->toBe(['label' => 'orders', 'platform' => ServerRegion::platform()]);
 
     $source->respond($child, ['type' => 'text', 'props' => ['text' => 'Orders: 12']]);
 

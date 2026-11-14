@@ -5,7 +5,7 @@ namespace Native\Api\Client\Asgard;
 /**
  * One file on its way to an `#[Upload]` method (protocol §10.6).
  *
- * Like a ServerRequest it carries the method, args, state and platform.
+ * Like a ServerRequest it carries the method, args and state.
  * It also names the file: its resolved path on the device, its size when
  * it was checked, and a filename and mime type the server only shows.
  * The server sniffs the real type from the bytes.
@@ -21,7 +21,6 @@ final class UploadRequest
         public readonly string $method,
         public readonly array $args,
         public readonly array $state,
-        public readonly string $platform,
         public readonly string $path,
         public readonly string $filename,
         public readonly string $mime,
@@ -36,7 +35,6 @@ final class UploadRequest
             'method' => $this->method,
             'args' => $this->args,
             'state' => $this->state,
-            'platform' => $this->platform,
             'filename' => $this->filename,
             'mime' => $this->mime,
             'size' => $this->size,

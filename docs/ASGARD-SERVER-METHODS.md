@@ -119,12 +119,13 @@ region render, and resolves that name through the same boot-time registry
 Arguments are client-authored and therefore untrusted, on the same footing as
 state. See §5.1 of the protocol doc.
 
-The platform goes too, as it does on a region request. On the wire, sealed
+The keys in `midgard.asgard.state` go in the state too, as they do on a
+region request (§2.3). By default that is the platform. On the wire, sealed
 like every other Asgard request, to `{prefix}/call`:
 
 ```json
 {"protocol":1,"component":"app.native.screens.home","method":"refreshChart",
- "args":["30d"],"state":{"loading":true,"range":"30d"},"platform":"ios"}
+ "args":["30d"],"state":{"loading":true,"range":"30d","platform":"ios"}}
 ```
 
 The server answers with the delta (§5.1):
@@ -204,6 +205,48 @@ On the Asgard server, state keys with no matching public prop are ignored
 (logged when `app.debug` is on). A server component that wants a computed
 value declares a public typed prop of the same name and gets it hydrated like
 any other state.
+
+### 2.3 App-wide state from `midgard.asgard.state`
+
+The protocol has no field for the platform, the app version or anything else
+about the app. Whatever the server should know goes in the state, and
+`midgard.asgard.state` adds it to every request: region renders and batches,
+server actions, `#[Server]` calls, uploads and each push subscription, a
+server screen's route state included.
+
+```php
+'state' => [
+    'platform' => [ServerRegion::class, 'platform'],   // the default
+    'app_version' => [AppInfo::class, 'version'],
+],
+```
+
+A value is sent as it is, or called with no arguments each time a request is
+built when it is a closure or a `[Class::class, 'method']` callable. Use the
+callable array in config/midgard.php. A closure there breaks
+`php artisan config:cache`, which NativePHP runs on the device. Keys follow
+the rule every state key does on the server, a PHP property name. Values must
+be plain JSON data: scalars, null and arrays of those. A bad key or value
+throws, since it is a mistake in the app's config.
+
+A component's own public prop or `#[Computed]` value of the same name wins:
+when the component sends a key, its value goes. These keys are not props, so
+a delta that names one is ignored and logged under debug, and the rest still
+applies. They are part of the state everywhere the state counts: the
+compare-and-set fingerprints, the state a push subscription is matched by,
+and the server's shared render cache. Keep the values stable, since a change
+of state asks the server again.
+
+On the server a component reads one through a public prop of the same name,
+like `public string $platform = '';`.
+
+`midgard.asgard.headers` sends plain HTTP headers with every request, the
+push stream and the handshake included. TLS covers them but the protocol's
+body encryption and signature do not, so they must not carry anything the
+encryption is there to protect. The server's shared render cache is not keyed
+by them, so a shared push region must not depend on one. Header names the
+transport or the protocol uses are refused with an exception (the list is in
+config/midgard.php).
 
 ## 3. The request runs off the UI thread
 

@@ -50,8 +50,6 @@ class RegionStreams
      */
     protected array $subscriptions = [];
 
-    protected string $platform = '';
-
     protected ?Session $session = null;
 
     protected ?string $signature = null;
@@ -76,7 +74,7 @@ class RegionStreams
      *
      * @param  list<array{id: string, component: string, regions: list<string>, state: array, versions?: array<string, string>}>  $subscriptions
      */
-    public function watch(array $subscriptions, string $platform): void
+    public function watch(array $subscriptions): void
     {
         $next = [];
         foreach ($subscriptions as $subscription) {
@@ -90,12 +88,11 @@ class RegionStreams
         }
 
         // Versions alone do not make a set different. The stream keeps its own.
-        if ($platform === $this->platform && self::shape($next) === self::shape($this->subscriptions)) {
+        if (self::shape($next) === self::shape($this->subscriptions)) {
             return;
         }
 
         $this->subscriptions = $next;
-        $this->platform = $platform;
         $this->retried = false;
 
         if ($next === []) {
@@ -238,7 +235,6 @@ class RegionStreams
 
         $sealed = $this->client->sealStream($session, json_encode([
             'protocol' => 1,
-            'platform' => $this->platform,
             'subscriptions' => $subscriptions,
         ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR));
 
@@ -246,7 +242,14 @@ class RegionStreams
         $this->signature = $sealed['signature'];
 
         // In the form this installation found works (§8), QUERY or POST.
-        Stream::open(self::ID, $this->client->endpoint('stream'), $sealed['headers'] + ['accept' => 'text/event-stream'], $sealed['body'], $sealed['method']);
+        // The app's extra headers (midgard.asgard.headers) go too, worked out now.
+        Stream::open(
+            self::ID,
+            $this->client->endpoint('stream'),
+            $sealed['headers'] + ['accept' => 'text/event-stream'] + $this->client->extraHeaders(),
+            $sealed['body'],
+            $sealed['method'],
+        );
     }
 
     /** Get a new session without blocking the UI lane, then open the stream with it. */

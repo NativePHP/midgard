@@ -113,7 +113,7 @@ class FakeFragmentSource implements FragmentSource
         }
     }
 
-    public function watch(array $subscriptions, string $platform): void
+    public function watch(array $subscriptions): void
     {
         $this->watches[] = $subscriptions;
     }

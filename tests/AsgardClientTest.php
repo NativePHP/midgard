@@ -16,7 +16,7 @@ beforeEach(function () {
 
 function renderBody(array $overrides = []): array
 {
-    return ['protocol' => 1, 'component' => 'app.native.screens.home', 'region' => 'stats', 'state' => [], 'platform' => 'ios', ...$overrides];
+    return ['protocol' => 1, 'component' => 'app.native.screens.home', 'region' => 'stats', 'state' => [], ...$overrides];
 }
 
 it('handshakes once, then signs, encrypts and verifies every render', function () {

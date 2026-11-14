@@ -166,6 +166,61 @@ class Car extends Resource
 
 Anything the API returns under a `relationships` key is hydrated onto the model when it's retrieved.
 
+## Asgard
+
+Asgard server regions, screens, actions and `#[Server]` methods are set up
+under `midgard.asgard` in config/midgard.php. Each option is described there,
+and `#[Server]` methods are covered in
+[docs/ASGARD-SERVER-METHODS.md](docs/ASGARD-SERVER-METHODS.md).
+
+### Telling the server about the app
+
+The Asgard protocol has no field for the platform, app version or anything
+else about the app. Send what the server should know with `state`, which adds
+keys to the state of every Asgard request (region renders and batches,
+actions, `#[Server]` calls, uploads and each push stream subscription):
+
+```php
+'state' => [
+    'platform' => [\Native\Api\Client\Asgard\ServerRegion::class, 'platform'], // the default
+    'app_version' => [\App\AppInfo::class, 'version'],
+    'channel' => 'beta',
+],
+```
+
+- A value is sent as it is, or called each time a request is built when it is
+  a closure or a `[Class::class, 'method']` callable. Prefer the callable array:
+  a closure in config stops `php artisan config:cache` working, and NativePHP
+  runs that on the device.
+- Keys are property names (letters, digits and underscores, not starting with
+  a digit). Values are scalars, null or arrays of those. Anything else throws.
+- A component's own public prop or `#[Computed]` of the same name wins, and
+  its value is sent instead.
+- These keys are not props of the component, so a server delta that names one
+  is ignored and logged under debug.
+- They are ordinary state, so they count wherever state counts, including the
+  server's shared push cache. A server component reads one with a public
+  property of the same name.
+
+`headers` sends plain HTTP headers with every Asgard request, the push stream
+and the handshake included:
+
+```php
+'headers' => [
+    'X-App-Version' => [\App\AppInfo::class, 'version'],
+],
+```
+
+The server reads them with `request()->header()`. TLS covers them, but the
+protocol's body encryption and signature do not, so do not put anything in
+them that the encryption is meant to protect. The server's shared push cache
+is not keyed by headers, so a shared region must not depend on one; send it in
+`state` instead. Names the transport or the protocol already uses (`Accept`,
+`Authorization`, `Connection`, `Content-*`, `Cookie`, `Host`, `Last-Event-ID`,
+`Signature`, `Signature-Input`, `Transfer-Encoding`, the method override
+headers, and anything starting `Asgard-` or `X-Asgard-`) are refused with an
+exception. A callable that gives null leaves the header out of that request.
+
 ## Testing
 
 ```shell

@@ -171,7 +171,6 @@ class ServerMethods
             method: $method,
             args: $args,
             state: $state,
-            platform: ServerRegion::platform(),
         );
 
         return static::begin(
@@ -230,7 +229,6 @@ class ServerMethods
             method: $method,
             args: array_values($args),
             state: $state,
-            platform: ServerRegion::platform(),
             path: $real,
             filename: basename($real),
             mime: UploadRequest::guessMime($real),
@@ -747,6 +745,19 @@ class ServerMethods
             if (ComponentState::isComputed($component, $prop)) {
                 NativeRouter::debugLog(
                     'Asgard: delta prop ['.$prop.'] is #[Computed] on '.$component::class.' — read-only, ignored.'
+                );
+
+                $refused[$prop] = $value;
+
+                continue;
+            }
+
+            // An app-wide key from midgard.asgard.state that the component
+            // does not have as a prop of its own. It is sent, but it is not
+            // the component's to change.
+            if (! isset($writable[$prop]) && ComponentState::isConfigured($prop)) {
+                NativeRouter::debugLog(
+                    'Asgard: delta prop ['.$prop.'] is a midgard.asgard.state key, not a prop of '.$component::class.' — ignored.'
                 );
 
                 $refused[$prop] = $value;

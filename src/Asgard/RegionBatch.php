@@ -8,8 +8,7 @@ namespace Native\Api\Client\Asgard;
  *
  * Each region is still its own RegionRequest, with its own id, timer and
  * supersede rule. The batch only groups them on the wire: one body with
- * `regions` instead of `region`, sharing the component, state and
- * platform. The source answers with ServerRegion::deliverBatch(), or
+ * `regions` instead of `region`, sharing the component and state. The source answers with ServerRegion::deliverBatch(), or
  * ServerRegion::failedBatch() when the whole request failed.
  */
 final class RegionBatch
@@ -47,7 +46,6 @@ final class RegionBatch
             'component' => $first->component,
             'regions' => $this->regions(),
             'state' => $first->state,
-            'platform' => $first->platform,
         ];
     }
 }

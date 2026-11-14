@@ -24,12 +24,11 @@ class ActionRequest extends RegionRequest
         string $component,
         string $region,
         array $state,
-        string $platform,
         public readonly string $call,
         public readonly array $args = [],
         ?string $componentClass = null,
     ) {
-        parent::__construct($id, $component, $region, $state, $platform, $componentClass);
+        parent::__construct($id, $component, $region, $state, $componentClass);
     }
 
     /** The render body, plus the action to run before rendering. */

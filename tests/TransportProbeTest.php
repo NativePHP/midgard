@@ -24,7 +24,7 @@ afterEach(fn () => Stream::unfake());
 
 function probeBody(): array
 {
-    return ['protocol' => 1, 'component' => 'promos.show', 'region' => 'screen', 'state' => [], 'platform' => 'ios'];
+    return ['protocol' => 1, 'component' => 'promos.show', 'region' => 'screen', 'state' => []];
 }
 
 it('handshakes with a plain POST, then sends real QUERY and remembers it', function () {
@@ -211,7 +211,7 @@ it('opens the native stream with the remembered method', function () {
     $this->client->render(probeBody());
 
     $streams = new RegionStreams($this->client, fn () => 1, fn () => 1);
-    $streams->watch([['id' => 'a', 'component' => 'promos.show', 'regions' => ['screen'], 'state' => []]], 'ios');
+    $streams->watch([['id' => 'a', 'component' => 'promos.show', 'regions' => ['screen'], 'state' => []]]);
 
     $open = $fake->lastOpen(RegionStreams::ID);
 

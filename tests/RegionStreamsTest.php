@@ -66,7 +66,7 @@ function fragmentEvent(string $region = 'stats', array $extra = [], string $subs
 }
 
 it('opens one signed, encrypted stream carrying every subscription', function () {
-    $this->streams->watch([sub(versions: ['stats' => 'v1']), sub('promo', ['screen'], ['id' => '1'], [], 'promos.show')], 'ios');
+    $this->streams->watch([sub(versions: ['stats' => 'v1']), sub('promo', ['screen'], ['id' => '1'], [], 'promos.show')]);
 
     $open = $this->stream->lastOpen(ASGARD);
 
@@ -82,7 +82,6 @@ it('opens one signed, encrypted stream carrying every subscription', function ()
         ->and($open['headers']['signature-input'])->not->toContain('nonce')
         ->and(($this->opened)()['body'])->toBe([
             'protocol' => 1,
-            'platform' => 'ios',
             'subscriptions' => [
                 ['id' => 'home', 'component' => 'app.native.screens.home', 'regions' => ['stats'], 'state' => ['name' => 'Simon'], 'versions' => ['stats' => 'v1']],
                 ['id' => 'promo', 'component' => 'promos.show', 'regions' => ['screen'], 'state' => ['id' => '1']],
@@ -92,50 +91,50 @@ it('opens one signed, encrypted stream carrying every subscription', function ()
 });
 
 it('sends empty state as a JSON object', function () {
-    $this->streams->watch([sub(state: [])], 'ios');
+    $this->streams->watch([sub(state: [])]);
 
     expect(($this->opened)()['raw'])->toContain('"state":{}');
 });
 
 it('does not reopen for an unchanged set, even when only versions moved', function () {
-    $this->streams->watch([sub(versions: ['stats' => 'v1'])], 'ios');
-    $this->streams->watch([sub(versions: ['stats' => 'v1'])], 'ios');
-    $this->streams->watch([sub(versions: ['stats' => 'v9'])], 'ios');
+    $this->streams->watch([sub(versions: ['stats' => 'v1'])]);
+    $this->streams->watch([sub(versions: ['stats' => 'v1'])]);
+    $this->streams->watch([sub(versions: ['stats' => 'v9'])]);
 
     expect($this->stream->opens)->toHaveCount(1);
 });
 
 it('reopens when the set changes', function () {
-    $this->streams->watch([sub()], 'ios');
-    $this->streams->watch([sub(), sub('other', state: ['name' => 'Ada'])], 'ios');
-    $this->streams->watch([sub('other', state: ['name' => 'Ada'])], 'ios');
+    $this->streams->watch([sub()]);
+    $this->streams->watch([sub(), sub('other', state: ['name' => 'Ada'])]);
+    $this->streams->watch([sub('other', state: ['name' => 'Ada'])]);
 
     expect($this->stream->opens)->toHaveCount(3)
         ->and(array_column(($this->opened)()['body']['subscriptions'], 'id'))->toBe(['other']);
 });
 
 it('closes the stream for an empty set, and opens it again for a new one', function () {
-    $this->streams->watch([sub()], 'ios');
-    $this->streams->watch([], 'ios');
+    $this->streams->watch([sub()]);
+    $this->streams->watch([]);
 
     $this->stream->assertClosed(ASGARD);
     expect($this->streams->subscriptions())->toBe([]);
 
-    $this->streams->watch([], 'ios');
+    $this->streams->watch([]);
     expect($this->stream->closes)->toHaveCount(1);
 
-    $this->streams->watch([sub()], 'ios');
+    $this->streams->watch([sub()]);
     expect($this->stream->opens)->toHaveCount(2);
 });
 
 it('does not open a stream for an empty first set', function () {
-    $this->streams->watch([], 'ios');
+    $this->streams->watch([]);
 
     $this->stream->assertNothingOpened();
 });
 
 it('hands a signal to the signaller with its subscription\'s address and state', function () {
-    $this->streams->watch([sub(), sub('ada', state: ['name' => 'Ada'])], 'ios');
+    $this->streams->watch([sub(), sub('ada', state: ['name' => 'Ada'])]);
 
     $this->streams->receive(($this->event)(['protocol' => 1, 'subscription' => 'ada', 'region' => 'stats', 'version' => 'v2'], event: 'signal'));
 
@@ -144,7 +143,7 @@ it('hands a signal to the signaller with its subscription\'s address and state',
 });
 
 it('hands a shared region\'s fragment to the pusher, and keeps its version for a reconnect', function () {
-    $this->streams->watch([sub(versions: ['stats' => 'v1'])], 'ios');
+    $this->streams->watch([sub(versions: ['stats' => 'v1'])]);
 
     $this->streams->receive(($this->event)(fragmentEvent()));
 
@@ -156,7 +155,7 @@ it('hands a shared region\'s fragment to the pusher, and keeps its version for a
 });
 
 it('does not take a signal\'s version as held, since the region is not fetched yet', function () {
-    $this->streams->watch([sub(versions: ['stats' => 'v1'])], 'ios');
+    $this->streams->watch([sub(versions: ['stats' => 'v1'])]);
 
     $this->streams->receive(($this->event)(['protocol' => 1, 'subscription' => 'home', 'region' => 'stats', 'version' => 'v2'], event: 'signal'));
     $this->streams->closed(new StreamClosed(ASGARD, 'timed out', reconnect: true));
@@ -165,7 +164,7 @@ it('does not take a signal\'s version as held, since the region is not fetched y
 });
 
 it('hands a server screen\'s chrome to the pusher with its fragment', function () {
-    $this->streams->watch([sub(regions: ['screen'])], 'ios');
+    $this->streams->watch([sub(regions: ['screen'])]);
 
     $this->streams->receive(($this->event)(fragmentEvent('screen', ['chrome' => ['nav_bar' => ['title' => 'P']]])));
     $this->streams->receive(($this->event)(fragmentEvent('screen', ['chrome' => 'nope'])));
@@ -175,7 +174,7 @@ it('hands a server screen\'s chrome to the pusher with its fragment', function (
 });
 
 it('unzips a compressed event before painting it', function () {
-    $this->streams->watch([sub()], 'ios');
+    $this->streams->watch([sub()]);
     $rows = array_map(fn ($i) => ['type' => 'text', 'props' => ['text' => "Row {$i}"]], range(1, 200));
     $event = ($this->event)(fragmentEvent('stats', ['fragment' => ['type' => 'column', 'children' => $rows]]), '3', null, true);
 
@@ -187,7 +186,7 @@ it('unzips a compressed event before painting it', function () {
 });
 
 it('drops an event whose coding marker was flipped or stripped', function () {
-    $this->streams->watch([sub()], 'ios');
+    $this->streams->watch([sub()]);
     $rows = array_map(fn ($i) => ['type' => 'text', 'props' => ['text' => "Row {$i}"]], range(1, 200));
     $event = ($this->event)(fragmentEvent('stats', ['fragment' => $rows]), '3', null, true);
     $data = json_decode($event->data, true);
@@ -199,7 +198,7 @@ it('drops an event whose coding marker was flipped or stripped', function () {
 });
 
 it('drops a compressed event that inflates past the cap', function () {
-    $this->streams->watch([sub()], 'ios');
+    $this->streams->watch([sub()]);
     $open = ($this->opened)();
     $bomb = Wire::sealEvent($this->server->sessions[$open['session']], $open['session'], $open['signature'], '3', 'fragment', str_repeat(' ', 9 * 1024 * 1024), null, true);
 
@@ -209,7 +208,7 @@ it('drops a compressed event that inflates past the cap', function () {
 });
 
 it('drops an event that does not verify, and never acts on it', function (Closure $mangle) {
-    $this->streams->watch([sub()], 'ios');
+    $this->streams->watch([sub()]);
     $event = ($this->event)(fragmentEvent());
 
     $this->streams->receive($mangle($event));
@@ -235,7 +234,7 @@ it('drops an event that does not verify, and never acts on it', function (Closur
 ]);
 
 it('drops an event sealed for another stream request', function () {
-    $this->streams->watch([sub()], 'ios');
+    $this->streams->watch([sub()]);
 
     $this->streams->receive(($this->event)(fragmentEvent(), '3', str_repeat("\1", 32)));
 
@@ -243,7 +242,7 @@ it('drops an event sealed for another stream request', function () {
 });
 
 it('drops events from before a reopen, because they were bound to the old request', function () {
-    $this->streams->watch([sub()], 'ios');
+    $this->streams->watch([sub()]);
     $old = ($this->event)(fragmentEvent());
 
     $this->streams->closed(new StreamClosed(ASGARD, 'timed out', reconnect: true));
@@ -253,7 +252,7 @@ it('drops events from before a reopen, because they were bound to the old reques
 });
 
 it('drops events for a subscription or region the stream does not carry', function (array $payload, string $event) {
-    $this->streams->watch([sub()], 'ios');
+    $this->streams->watch([sub()]);
 
     $this->streams->receive(($this->event)($payload, event: $event));
 
@@ -269,7 +268,7 @@ it('drops events for a subscription or region the stream does not carry', functi
 ]);
 
 it('ignores other events and other streams', function () {
-    $this->streams->watch([sub()], 'ios');
+    $this->streams->watch([sub()]);
 
     $this->streams->receive(new StreamMessage(ASGARD, 'message', '{}', '3'));
     $this->streams->receive(new StreamMessage('asgard:app.other', 'fragment', '{}', '3'));
@@ -279,17 +278,17 @@ it('ignores other events and other streams', function () {
 });
 
 it('drops events once the stream is closed', function () {
-    $this->streams->watch([sub()], 'ios');
+    $this->streams->watch([sub()]);
     $event = ($this->event)(fragmentEvent());
 
-    $this->streams->watch([], 'ios');
+    $this->streams->watch([]);
     $this->streams->receive($event);
 
     expect($this->pushed)->toBe([]);
 });
 
 it('reopens with a fresh signature when the native side asks to reconnect', function () {
-    $this->streams->watch([sub()], 'ios');
+    $this->streams->watch([sub()]);
     $first = $this->stream->lastOpen(ASGARD)['headers']['signature'];
 
     $this->streams->closed(new StreamClosed(ASGARD, 'HTTP 503', reconnect: true));
@@ -302,7 +301,7 @@ it('reopens with a fresh signature when the native side asks to reconnect', func
 });
 
 it('handshakes again once on a 419, and gives up on a second one', function () {
-    $this->streams->watch([sub()], 'ios');
+    $this->streams->watch([sub()]);
     $this->server->forgetSessions();
 
     $this->streams->closed(new StreamClosed(ASGARD, 'HTTP 419', false, 419));
@@ -318,7 +317,7 @@ it('handshakes again once on a 419, and gives up on a second one', function () {
 });
 
 it('allows another 419 retry once the stream has opened again', function () {
-    $this->streams->watch([sub()], 'ios');
+    $this->streams->watch([sub()]);
     $this->streams->closed(new StreamClosed(ASGARD, 'HTTP 419', false, 419));
     $this->streams->opened(new StreamOpened(ASGARD));
     $this->streams->closed(new StreamClosed(ASGARD, 'HTTP 419', false, 419));
@@ -328,19 +327,19 @@ it('allows another 419 retry once the stream has opened again', function () {
 });
 
 it('stops on a 403 or any other final close, until the device hands over a set again', function () {
-    $this->streams->watch([sub()], 'ios');
+    $this->streams->watch([sub()]);
 
     $this->streams->closed(new StreamClosed(ASGARD, 'HTTP 403', false, 403));
 
     expect($this->streams->subscriptions())->toBe([])
         ->and($this->stream->opens)->toHaveCount(1);
 
-    $this->streams->watch([sub()], 'ios');
+    $this->streams->watch([sub()]);
     expect($this->stream->opens)->toHaveCount(2);
 });
 
 it('closes the stream', function () {
-    $this->streams->watch([sub()], 'ios');
+    $this->streams->watch([sub()]);
     $this->streams->close();
 
     $this->stream->assertClosed(ASGARD);

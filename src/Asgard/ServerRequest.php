@@ -9,8 +9,9 @@ namespace Native\Api\Client\Asgard;
  * The method name, its arguments, and a snapshot of the component's
  * public state taken AFTER the client body returned. That ordering is the
  * point: local mutations made in the body are part of the request. The
- * platform rides along, as it does on a region request, so the server
- * method can tell iOS from Android.
+ * keys from `midgard.asgard.state` ride along in it, as they do on a
+ * region request, so the server method can read the platform like any
+ * other prop.
  *
  * What is NOT here is as load bearing as what is. The closure the body
  * returned never reaches this object: it is a PHP value held on the
@@ -27,7 +28,6 @@ final class ServerRequest
         public readonly string $method,
         public readonly array $args,
         public readonly array $state,
-        public readonly string $platform = 'unknown',
     ) {}
 
     /** The body a transport signs, encrypts and sends. */
@@ -38,7 +38,6 @@ final class ServerRequest
             'method' => $this->method,
             'args' => $this->args,
             'state' => $this->state,
-            'platform' => $this->platform,
         ];
     }
 }

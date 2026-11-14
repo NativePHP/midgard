@@ -34,7 +34,9 @@ class HttpUploadTransport implements UploadTransport
         $endpoint = rtrim($this->config['base'], '/').'/upload';
         $what = "upload to {$request->component}::{$request->method}()";
 
-        $task = AsyncTask::dispatch(self::uploadWork($this->config, $header, $request->path))
+        $config = ['headers' => AsgardClient::configuredHeaders()] + $this->config;
+
+        $task = AsyncTask::dispatch(self::uploadWork($config, $header, $request->path))
             ->anyScreen()
             ->timeout(self::laneTimeout($this->config))
             // Named, not static::, as a callback may be bound to a screen.

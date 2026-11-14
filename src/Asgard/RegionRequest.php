@@ -7,8 +7,9 @@ namespace Native\Api\Client\Asgard;
  *
  * `component` is the dot-notation address of the component that rendered
  * the region (ComponentAddress, protocol §4), which is a child component
- * when the `@server` block sits in a child's view. `state` is that
- * component's public props, kept to what JSON can carry: scalars, null,
+ * when the `@server` block sits in a child's view. `state` is what that
+ * component sends (ComponentState, with `midgard.asgard.state` added), kept
+ * to what JSON can carry: scalars, null,
  * and arrays of those. A prop holding anything else (an object, an enum,
  * a non-finite float) is left out whole rather than half-sent.
  *
@@ -24,7 +25,6 @@ class RegionRequest
         public readonly string $component,
         public readonly string $region,
         public readonly array $state,
-        public readonly string $platform,
         public readonly ?string $componentClass = null,
     ) {}
 
@@ -35,7 +35,6 @@ class RegionRequest
             'component' => $this->component,
             'region' => $this->region,
             'state' => $this->state,
-            'platform' => $this->platform,
         ];
     }
 }
