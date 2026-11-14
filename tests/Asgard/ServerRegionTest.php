@@ -116,6 +116,53 @@ it('replaces the placeholder with an applied fragment', function () {
     expect(json_encode($region))->not->toContain('Loading sales');
 });
 
+it('keeps the shape of a fragment with several roots, siblings and depths', function () {
+    $template = <<<'BLADE'
+        <native:column fill>
+            @server('feed')
+                <native:text>Loading…</native:text>
+            @endserver
+        </native:column>
+        BLADE;
+
+    // Held prepared (flat, in pre-order), so this checks the child counts
+    // put every node back under the right parent.
+    ServerRegion::applyFragment('feed', [
+        ['type' => 'column', 'key' => 'a', 'children' => [
+            ['type' => 'text', 'key' => 'a1', 'props' => ['text' => 'a1']],
+            ['type' => 'row', 'key' => 'a2', 'children' => [
+                ['type' => 'text', 'key' => 'a2x', 'props' => ['text' => 'a2x']],
+                ['type' => 'text', 'key' => 'a2y', 'props' => ['text' => 'a2y']],
+            ]],
+            ['type' => 'text', 'key' => 'a3', 'props' => ['text' => 'a3']],
+        ]],
+        ['type' => 'spacer', 'key' => 'b'],
+        ['type' => 'text', 'key' => 'c', 'props' => ['text' => 'c']],
+    ]);
+
+    $shape = function (array $node) use (&$shape): array {
+        return [$node['type'], $node['props']['text'] ?? null, array_map($shape, $node['children'] ?? [])];
+    };
+
+    $first = renderNativeView('asgard-shape', $template)->toArray(new CallbackRegistry);
+
+    expect(array_map($shape, $first['children'][0]['children']))->toBe([
+        ['column', null, [
+            ['text', 'a1', []],
+            ['row', null, [['text', 'a2x', []], ['text', 'a2y', []]]],
+            ['text', 'a3', []],
+        ]],
+        ['spacer', null, []],
+        ['text', 'c', []],
+    ]);
+
+    expect($first['children'][0]['children'][0]['children'][1]['children'][1]['id'])
+        ->toBe(Element::fnv1a32('/feed/a/a2/a2y'));
+
+    // A held fragment paints the same on every frame.
+    expect(renderNativeView('asgard-shape', $template)->toArray(new CallbackRegistry))->toBe($first);
+});
+
 it('derives fragment node ids inside the region key path, not at the root', function () {
     ServerRegion::applyFragment('sales-summary', [
         'type' => 'column',

@@ -138,6 +138,9 @@ class ServerRegion
      * state, and the server rendered each fragment for one state. A
      * WeakMap also lets a fragment go when its component does.
      *
+     * Each fragment is held prepared (see prepare()), not as the tree
+     * that arrived.
+     *
      * @var \WeakMap<NativeComponent, array<string, array>>|null
      */
     protected static ?\WeakMap $fragments = null;
@@ -388,14 +391,14 @@ class ServerRegion
             return false;
         }
 
-        $nodes = static::checkCallbacks($nodes, $region);
+        $prepared = static::prepare(static::checkCallbacks($nodes, $region));
 
         if ($owner === null) {
-            static::$detached[$region] = $nodes;
+            static::$detached[$region] = $prepared;
             unset(static::$registries[$region]);
         } else {
             $held = static::fragments()[$owner] ?? [];
-            $held[$region] = $nodes;
+            $held[$region] = $prepared;
             static::fragments()[$owner] = $held;
             static::dropRegistry($region, $owner);
 
@@ -1554,7 +1557,7 @@ class ServerRegion
      */
     public static function paint(array $nodes): void
     {
-        static::emit($nodes);
+        static::emit(static::prepare($nodes));
     }
 
     /**
@@ -1898,25 +1901,65 @@ class ServerRegion
     }
 
     /**
-     * Emit a normalized node list through the collector's public
+     * Turn a checked node list into the form a region holds: three lists
+     * in pre-order, index for index. `types` and `counts` give each
+     * node's type and how many children follow it, and `attrs` its
+     * collector attribute bag.
+     *
+     * A fragment is applied once and painted on every frame, so the bags
+     * are built here rather than in emit().
+     *
+     * @return array{roots: int, types: list<string>, counts: list<int>, attrs: list<array>}
+     */
+    protected static function prepare(array $nodes): array
+    {
+        $prepared = ['roots' => count($nodes), 'types' => [], 'counts' => [], 'attrs' => []];
+
+        $walk = function (array $nodes) use (&$walk, &$prepared): void {
+            foreach ($nodes as $node) {
+                $children = static::normalize($node['children'] ?? []);
+
+                $prepared['types'][] = (string) $node['type'];
+                $prepared['counts'][] = count($children);
+                $prepared['attrs'][] = static::attrsFor($node);
+
+                $walk($children);
+            }
+        };
+
+        $walk($nodes);
+
+        return $prepared;
+    }
+
+    /**
+     * Emit a prepared fragment through the collector's public
      * open()/leaf()/close(), which is what makes a fragment work
      * identically in the Element-tree and streaming paths.
      */
-    protected static function emit(array $nodes): void
+    protected static function emit(array $prepared): void
     {
-        foreach ($nodes as $node) {
-            $type = (string) $node['type'];
-            $attrs = static::attrsFor($node);
-            $children = static::normalize($node['children'] ?? []);
+        $i = 0;
+        static::emitSiblings($prepared, $prepared['roots'], $i);
+    }
 
-            if ($children === []) {
+    /** Emit `$count` siblings starting at node `$i`, and their subtrees. */
+    protected static function emitSiblings(array $prepared, int $count, int &$i): void
+    {
+        for ($n = 0; $n < $count; $n++) {
+            $type = $prepared['types'][$i];
+            $children = $prepared['counts'][$i];
+            $attrs = $prepared['attrs'][$i];
+            $i++;
+
+            if ($children === 0) {
                 NativeElementCollector::leaf($type, $attrs);
 
                 continue;
             }
 
             NativeElementCollector::open($type, $attrs);
-            static::emit($children);
+            static::emitSiblings($prepared, $children, $i);
             NativeElementCollector::close();
         }
     }
