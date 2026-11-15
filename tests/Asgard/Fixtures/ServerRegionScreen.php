@@ -3,7 +3,7 @@
 namespace Native\Api\Client\Tests\Asgard\Fixtures;
 
 use Illuminate\View\View;
-use Native\Mobile\Attributes\NativeAction;
+use Native\Mobile\Attributes\ClientAction;
 use Native\Mobile\Edge\NativeComponent;
 
 /**
@@ -16,7 +16,7 @@ class ServerRegionScreen extends NativeComponent
 {
     public int $refreshes = 0;
 
-    #[NativeAction]
+    #[ClientAction]
     public function refresh(): void
     {
         $this->refreshes++;

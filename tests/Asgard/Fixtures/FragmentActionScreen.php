@@ -4,7 +4,7 @@ namespace Native\Api\Client\Tests\Asgard\Fixtures;
 
 use Illuminate\View\View;
 use Native\Api\Client\Asgard\Concerns\UsesServer;
-use Native\Mobile\Attributes\NativeAction;
+use Native\Mobile\Attributes\ClientAction;
 use Native\Mobile\Edge\Enums\ActionSource;
 use Native\Mobile\Edge\NativeComponent;
 
@@ -35,20 +35,20 @@ class FragmentActionScreen extends NativeComponent
         return parent::callAction($method, $args, $source);
     }
 
-    #[NativeAction]
+    #[ClientAction]
     public function celebrate(string $who, int $times = 1): void
     {
         $this->ran[] = "celebrate:{$who}:{$times}";
     }
 
-    /** Also #[NativeAction], so a server target that runs it locally would show. */
-    #[NativeAction]
+    /** Also #[ClientAction], so a server target that runs it locally would show. */
+    #[ClientAction]
     public function shuffle(mixed ...$args): void
     {
         $this->ran[] = 'shuffle';
     }
 
-    #[NativeAction]
+    #[ClientAction]
     public function toggled(bool $on): void
     {
         $this->ran[] = 'toggled:'.($on ? 'on' : 'off');
@@ -67,21 +67,21 @@ class FragmentActionScreen extends NativeComponent
     }
 
     /** Marked, but a lifecycle hook by name, so the guard refuses it. */
-    #[NativeAction]
+    #[ClientAction]
     public function hydrateRange(): void
     {
         $this->ran[] = 'hydrateRange';
     }
 
     /** Marked, but a class-typed parameter would mean binding or injection. */
-    #[NativeAction]
+    #[ClientAction]
     public function withObject(\stdClass $thing): void
     {
         $this->ran[] = 'withObject';
     }
 
     /** Optional, so only the parameter's type can refuse it. */
-    #[NativeAction]
+    #[ClientAction]
     public function withOptionalObject(?\stdClass $thing = null): void
     {
         $this->ran[] = 'withOptionalObject';
@@ -91,25 +91,25 @@ class FragmentActionScreen extends NativeComponent
      * Overrides a method the interaction path treats as a navigation
      * shortcut, so a fragment reaching it must still go through callAction().
      */
-    #[NativeAction]
+    #[ClientAction]
     public function exitToWeb(string $uri): void
     {
         $this->ran[] = 'exitToWeb:'.$uri;
     }
 
-    #[NativeAction]
+    #[ClientAction]
     public function withCallable(callable $fn): void
     {
         $this->ran[] = 'withCallable';
     }
 
-    #[NativeAction]
+    #[ClientAction]
     public function byReference(&$value): void
     {
         $this->ran[] = 'byReference';
     }
 
-    #[NativeAction]
+    #[ClientAction]
     protected function hidden(): void
     {
         $this->ran[] = 'hidden';

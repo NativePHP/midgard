@@ -3,7 +3,7 @@
 namespace Native\Api\Client\Tests\Asgard\Fixtures;
 
 use Illuminate\View\View;
-use Native\Mobile\Attributes\NativeAction;
+use Native\Mobile\Attributes\ClientAction;
 use Native\Mobile\Edge\NativeComponent;
 
 /** A child with a region named like its screen's, and an action of its own. */
@@ -12,7 +12,7 @@ class FragmentActionChild extends NativeComponent
     /** @var list<string> */
     public array $ran = [];
 
-    #[NativeAction]
+    #[ClientAction]
     public function celebrate(string $who, int $times = 1): void
     {
         $this->ran[] = "celebrate:{$who}:{$times}";

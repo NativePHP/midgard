@@ -171,7 +171,7 @@ class AsgardExtension extends RunloopExtensionBase
      * Run a tap on one of a component's fragment callbacks (§10).
      *
      * A `server` target sends an ActionRequest with the state as it is now,
-     * and nothing runs here. A `client` target runs a `#[NativeAction]`
+     * and nothing runs here. A `client` target runs a `#[ClientAction]`
      * method of the component as a remote call. A method the fragment may
      * not call runs nothing and is logged, or throws with `app.debug` on.
      * Either way a client callback never falls back to the server.

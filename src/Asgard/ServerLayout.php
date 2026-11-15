@@ -20,7 +20,7 @@ use Native\Mobile\Edge\NativeComponent;
  * Every button's press is a fragment callback expression, and every
  * element that carries one is pinned to the screen region's registry.
  * A chrome tap therefore resolves and dispatches exactly like a tap in
- * the screen's body: a server action, a #[NativeAction], or a checked
+ * the screen's body: a server action, a #[ClientAction], or a checked
  * navigation. Link tabs navigate the same way, with replace, as an app's
  * tab does.
  */

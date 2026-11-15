@@ -5,7 +5,7 @@ namespace Native\Api\Client\Tests\Asgard\Fixtures;
 use Illuminate\View\View;
 use Native\Api\Client\Asgard\Attributes\Server;
 use Native\Api\Client\Asgard\Events\ServerRegionFailed;
-use Native\Mobile\Attributes\NativeAction;
+use Native\Mobile\Attributes\ClientAction;
 use Native\Mobile\Attributes\On;
 use Native\Mobile\Edge\NativeComponent;
 
@@ -23,7 +23,7 @@ class TraitlessServerScreen extends NativeComponent
     /** @var list<string> reasons heard for failed regions */
     public array $failures = [];
 
-    #[NativeAction]
+    #[ClientAction]
     public function refresh(): void
     {
         $this->refreshes++;

@@ -21,7 +21,7 @@ use PHPUnit\Framework\AssertionFailedError;
 /**
  * Taps inside a server-rendered fragment (Asgard protocol §10).
  * A callback slot is `{"call", "args", "target"}`. A client target runs a
- * #[NativeAction] method on the component that owns the region; a server
+ * #[ClientAction] method on the component that owns the region; a server
  * target sends an ActionRequest and runs nothing here.
  */
 beforeEach(function () {
@@ -59,7 +59,7 @@ function paint(TestableComponent $screen, string $region, array $tree, ?NativeCo
 
 // ── Client target ───────────────────────────────────
 
-it('runs a #[NativeAction] method for a client target with the args as sent', function () {
+it('runs a #[ClientAction] method for a client target with the args as sent', function () {
     $source = Asgard::fakeFragmentSource();
     $screen = Native::test(FragmentActionScreen::class);
 
@@ -114,7 +114,7 @@ it('appends the control value to a client on_change', function () {
 });
 
 dataset('methods a fragment may not call', [
-    'public but not #[NativeAction]' => ['unmarked', [], RemoteActionNotAllowedException::class],
+    'public but not #[ClientAction]' => ['unmarked', [], RemoteActionNotAllowedException::class],
     'NativeComponent\'s dispatch' => ['dispatch', ['x'], ComponentMethodNotFoundException::class],
     'NativeComponent\'s navigate' => ['navigate', ['/admin'], ComponentMethodNotFoundException::class],
     'UsesServer\'s refreshServerRegions' => ['refreshServerRegions', [], ComponentMethodNotFoundException::class],
@@ -195,7 +195,7 @@ it('sends exactly one ActionRequest for a server target and runs nothing here', 
         'action' => ['call' => 'shuffle', 'args' => [3, 'x']],
     ]);
 
-    // The component has a #[NativeAction] shuffle(), and it did not run.
+    // The component has a #[ClientAction] shuffle(), and it did not run.
     expect($screen->get('ran'))->toBe([]);
 
     // An action is not a region request.

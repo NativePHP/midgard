@@ -23,7 +23,7 @@ use Native\Mobile\Edge\NativeRouter;
  *
  * Its address is the server screen's, not this class's, and its state is
  * the route's parameters and query string. It has no public properties of
- * its own and no #[NativeAction] methods, so a client target in a server
+ * its own and no #[ClientAction] methods, so a client target in a server
  * screen never runs anything.
  *
  * Until the first answer lands, it shows a placeholder skeleton and the

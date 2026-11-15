@@ -53,7 +53,7 @@ use Native\Mobile\System;
  * A callback slot is an object, `{"call", "args", "target"}`, checked
  * when the fragment is applied (FragmentCallbacks::parseSlot()). The
  * component's dispatch resolves a fragment id through registriesOf():
- * a `client` target runs a `#[NativeAction]` method on the component
+ * a `client` target runs a `#[ClientAction]` method on the component
  * that owns the region, and a `server` target goes out through action()
  * as an ActionRequest, whose answer comes back through deliverBatch().
  *
