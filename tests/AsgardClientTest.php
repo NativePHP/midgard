@@ -134,6 +134,14 @@ it('reports a refused handshake without retrying it', function () {
         ->and($this->server->handshakes)->toBe(1);
 });
 
+it('offers the versions it speaks and refuses an answer that picks another', function () {
+    $this->server->answerProtocol = 2;
+
+    expect($this->client->render(renderBody()))->toMatchArray(['ok' => false, 'error' => 'Handshake answer is malformed.'])
+        ->and($this->server->handshakeBodies[0]['protocols'])->toBe([1])
+        ->and($this->server->handshakeBodies[0])->not->toHaveKey('protocol');
+});
+
 it('treats a session as gone shortly before the server would', function () {
     $cache = new SessionCache(Cache::store(), 'k');
     $cache->put('session-id-0000000', str_repeat('s', 32), 1800, 1000);

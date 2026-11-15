@@ -83,6 +83,9 @@ class FakeAsgardServer
     /** Every handshake body, in order. */
     public array $handshakeBodies = [];
 
+    /** The version the handshake answer names in `protocol`. */
+    public mixed $answerProtocol = 1;
+
     /** The method of every request, handshakes included. */
     public array $methods = [];
 
@@ -225,13 +228,17 @@ class FakeAsgardServer
             return new Response(403, ['Content-Type' => 'application/json'], '{"error":"unknown_key"}');
         }
 
+        if (! in_array(1, (array) ($body['protocols'] ?? []), true)) {
+            return new Response(422, ['Content-Type' => 'application/json'], '{"error":"unsupported_protocol","protocols":[1]}');
+        }
+
         $clientPublic = Base64Url::decode($body['client_public']);
         [$private, $public] = Ecdh::generate();
         $id = Base64Url::encode(random_bytes(18));
         $this->sessions[$id] = SessionKeys::fromSecret(SessionKeys::secret(Ecdh::agree($private, $clientPublic), $clientPublic, $public));
 
         return new Response(200, ['Content-Type' => 'application/json'], json_encode([
-            'session' => $id, 'server_public' => Base64Url::encode($public), 'expires_in' => 1800, 'encoding' => 'tree/json',
+            'session' => $id, 'server_public' => Base64Url::encode($public), 'protocol' => $this->answerProtocol, 'expires_in' => 1800, 'encoding' => 'tree/json',
         ]));
     }
 }

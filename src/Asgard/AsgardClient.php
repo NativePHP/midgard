@@ -259,7 +259,7 @@ class AsgardClient
             $response = $this->http()->request('POST', $this->endpoint('session'), [
                 'body' => json_encode([
                     'key' => $this->key,
-                    'protocol' => 1,
+                    'protocols' => [(int) Wire::PROTOCOL],
                     'accepts' => [self::ENCODING],
                     'elements' => $this->elements,
                     'client_public' => Base64Url::encode($public),
@@ -282,6 +282,7 @@ class AsgardClient
         $lifetime = $json['expires_in'] ?? null;
 
         if (! is_string($id) || ! preg_match('/^[A-Za-z0-9_-]{16,64}$/D', $id) || ! is_int($lifetime) || $lifetime < 1
+            || ($json['protocol'] ?? null) !== (int) Wire::PROTOCOL
             || ($json['encoding'] ?? null) !== self::ENCODING || $serverPublic === null) {
             throw new AsgardException('Handshake answer is malformed.', $status);
         }
