@@ -293,6 +293,11 @@ also change the data the region renders from. The first load, a reconnect and
 every fallback render the region in full, and that render must show the same
 list the patches built.
 
+While that fetch is out, later patches don't ask again. The device keeps them,
+and when the region lands it applies the ones that follow on from the version
+it came with. Without that, a list taking patches faster than one fetch takes
+would never get an answer: each new ask dropped the one before.
+
 Patched nodes are checked like any fragment's nodes, and their taps work the
 same. A patch never fires `RegionCacheInvalidation`. It drops the region's
 cached copy, and the next full answer stores a fresh one.

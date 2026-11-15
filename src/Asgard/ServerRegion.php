@@ -370,6 +370,22 @@ class ServerRegion
      */
     protected static ?\WeakMap $built = null;
 
+    /**
+     * Patches that arrived for a region while a fetch a patch fell back to
+     * was out: `owner => [region => list<array{string, string, array}>]`,
+     * each as from, version and the parsed op, in the order they came.
+     *
+     * Without them every later patch also missed (the device still held the
+     * version before the fetch) and asked again, and each new request
+     * dropped the answer to the one before. With 60 patches a second and a
+     * fetch slower than one, no answer ever landed. Now the region asks
+     * once, and when the answer lands, the patches that follow on from its
+     * version are applied to it (replayDeferred()).
+     *
+     * @var \WeakMap<NativeComponent, array<string, list<array{string, string, array}>>>|null
+     */
+    protected static ?\WeakMap $deferred = null;
+
     /** At most this many nodes in one patch. */
     public const PATCH_MAX_NODES = 100;
 
@@ -378,6 +394,9 @@ class ServerRegion
 
     /** The largest `keep` a patch may send. */
     public const PATCH_MAX_KEEP = 100000;
+
+    /** Patches held for one region while its fetch is out (see $deferred). More asks again. */
+    public const PATCH_MAX_DEFERRED = 1000;
 
     /**
      * Open a region. Returns true when the caller should render the
@@ -682,6 +701,7 @@ class ServerRegion
         static::applyChrome($owner, $chrome);
         static::answer($owner, $region, $request->state, $version);
         static::remember($owner, $region, $request->state, $tree, $chrome, $version, $madeAt, $maxAge);
+        static::replayDeferred($owner, $region, $request->state);
 
         return true;
     }
@@ -733,6 +753,7 @@ class ServerRegion
             unset(static::$pending[$request->id]);
             $retry = isset(static::$retries[$request->id]);
             unset(static::$retries[$request->id]);
+            static::defer($owner, $entry['region'], null);
 
             if (static::keepCached($owner, $entry['region'], $request->state)) {
                 return true;
@@ -1111,6 +1132,7 @@ class ServerRegion
                 static::applyChrome($owner, $chrome);
                 static::answer($owner, $region, $state, $version);
                 static::remember($owner, $region, $state, $tree, $chrome, $version, $madeAt, $maxAge);
+                static::replayDeferred($owner, $region, $state);
                 $painted++;
             }
         }
@@ -1206,8 +1228,19 @@ class ServerRegion
                 continue;
             }
 
+            $waiting = (static::deferred()[$owner] ?? [])[$region] ?? null;
+
+            // A fetch is already out for the region. Keep the patch for its
+            // answer rather than asking again, which would drop that answer.
+            if ($op !== null && $waiting !== null && count($waiting) < self::PATCH_MAX_DEFERRED) {
+                static::defer($owner, $region, [...$waiting, [$from, $version, $op]]);
+
+                continue;
+            }
+
             NativeRouter::debugLog("Asgard: patch for [{$component}] [{$region}] not applied ({$why}). Fetching the region instead.");
             static::refresh($owner, $region, push: true);
+            static::defer($owner, $region, $op === null ? [] : [[$from, $version, $op]]);
             $fallback++;
         }
 
@@ -1589,6 +1622,75 @@ class ServerRegion
     protected static function patchState(): \WeakMap
     {
         return static::$patchState ??= new \WeakMap;
+    }
+
+    /** @return \WeakMap<NativeComponent, array<string, list<array{string, string, array}>>> */
+    protected static function deferred(): \WeakMap
+    {
+        return static::$deferred ??= new \WeakMap;
+    }
+
+    /**
+     * Set the patches a region holds for its fetch. An empty list means the
+     * fetch is out with nothing held yet, null that no fetch is out.
+     *
+     * @param  list<array{string, string, array}>|null  $patches
+     */
+    protected static function defer(NativeComponent $owner, string $region, ?array $patches): void
+    {
+        $all = static::deferred()[$owner] ?? [];
+
+        if ($patches === null) {
+            if (! isset($all[$region])) {
+                return;
+            }
+
+            unset($all[$region]);
+        } else {
+            $all[$region] = $patches;
+        }
+
+        static::deferred()[$owner] = $all;
+    }
+
+    /**
+     * A whole region just landed. Apply the patches held for it that follow
+     * on from its version, in order, and drop the rest: the ones older than
+     * the answer are in it already. A gap or a patch that does not apply
+     * stops there, and the next patch asks again.
+     */
+    protected static function replayDeferred(NativeComponent $owner, string $region, array $state): void
+    {
+        $patches = (static::deferred()[$owner] ?? [])[$region] ?? null;
+
+        if ($patches === null) {
+            return;
+        }
+
+        static::defer($owner, $region, null);
+
+        $held = (static::answered()[$owner] ?? [])[$region]['version'] ?? null;
+        $applied = false;
+
+        foreach ($patches as [$from, $version, $op]) {
+            if ($from !== $held) {
+                continue;
+            }
+
+            if (($why = static::applyPatch($owner, $region, $held, $from, $op)) !== null) {
+                NativeRouter::debugLog("Asgard: a held patch for [{$region}] did not apply to the fetched region ({$why}).");
+
+                break;
+            }
+
+            static::answer($owner, $region, $state, $version);
+            $held = $version;
+            $applied = true;
+        }
+
+        if ($applied) {
+            static::dropCachedCopy($owner, $region, $state);
+        }
     }
 
     /**
@@ -2223,6 +2325,7 @@ class ServerRegion
             static::copies()[$owner],
             static::patchState()[$owner],
             static::built()[$owner],
+            static::deferred()[$owner],
         );
 
         static::$held = array_values(array_filter(
@@ -2331,6 +2434,7 @@ class ServerRegion
         static::$retries = [];
         static::$patchState = null;
         static::$built = null;
+        static::$deferred = null;
     }
 
     /**
@@ -2477,6 +2581,7 @@ class ServerRegion
             static::applyChrome($owner, $entry['chrome']);
             static::answer($owner, $entry['region'], $entry['state'], $entry['version']);
             static::remember($owner, $entry['region'], $entry['state'], $entry['tree'], $entry['chrome'], $entry['version'], $entry['made_at'], $entry['max_age']);
+            static::replayDeferred($owner, $entry['region'], $entry['state']);
         }
 
         if ($acted) {
@@ -2847,6 +2952,8 @@ class ServerRegion
      */
     protected static function fail(NativeComponent $owner, string $region, RegionRequest $request, string $reason, ?int $status, ?string $message): bool
     {
+        static::defer($owner, $region, null);
+
         NativeRouter::debugLog("Asgard: request [{$request->id}] for region [{$region}] failed ({$reason}".($status === null ? '' : " {$status}").'): '.($message ?? ''));
 
         if ($owner instanceof ServerScreen && $region === ServerScreen::REGION && isset(static::awaiting()[$owner])) {

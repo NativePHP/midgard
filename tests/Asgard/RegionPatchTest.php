@@ -345,6 +345,68 @@ it('fetches the region whole when the patch does not apply', function (Closure $
     ])],
 ]);
 
+it('asks once while a fetch is out, and applies the patches that follow on from its answer', function () {
+    $screen = feedScreen();
+    $source = Asgard::fakeFragmentSource();
+
+    // A patch the device cannot apply: it fetches the region.
+    ($this->feedPatch)(['op' => 'prepend', 'target' => 'items', 'nodes' => [feedItem(9)]], 'v0', 'v2');
+    nextFrame($screen);
+
+    // More patches land while the fetch is out. None of them asks again.
+    foreach ([10 => ['v2', 'v3'], 11 => ['v3', 'v4'], 12 => ['v4', 'v5']] as $item => [$from, $version]) {
+        ($this->feedPatch)(['op' => 'prepend', 'target' => 'items', 'nodes' => [feedItem($item)]], $from, $version);
+        nextFrame($screen);
+    }
+
+    $source->assertRequested('feed', 2);
+
+    // The server rendered the region at v3, so 9 and 10 are in it already.
+    $source->respond('feed', feedTree([10, 9, 1, 2, 3]), 'v3');
+
+    expect(itemsOn(nextFrame($screen)))->toBe([12, 11, 10, 9, 1, 2, 3])
+        ->and(ServerRegion::subscriptions()[0]['versions'])->toBe(['feed' => 'v5']);
+
+    // And patching carries on from there.
+    ($this->feedPatch)(['op' => 'prepend', 'target' => 'items', 'nodes' => [feedItem(13)]], 'v5', 'v6');
+    expect(itemsOn(nextFrame($screen)))->toBe([13, 12, 11, 10, 9, 1, 2, 3]);
+    $source->assertRequested('feed', 2);
+});
+
+it('asks again after an answer that no held patch follows on from', function () {
+    $screen = feedScreen();
+    $source = Asgard::fakeFragmentSource();
+
+    ($this->feedPatch)(['op' => 'prepend', 'target' => 'items', 'nodes' => [feedItem(9)]], 'v0', 'v2');
+    nextFrame($screen);
+    ($this->feedPatch)(['op' => 'prepend', 'target' => 'items', 'nodes' => [feedItem(10)]], 'v2', 'v3');
+
+    // The answer is newer than everything held. Nothing is replayed onto it.
+    $source->respond('feed', feedTree([11, 10, 9, 1, 2, 3]), 'v4');
+    expect(itemsOn(nextFrame($screen)))->toBe([11, 10, 9, 1, 2, 3]);
+
+    // A patch from another version still fetches the region.
+    ($this->feedPatch)(['op' => 'prepend', 'target' => 'items', 'nodes' => [feedItem(12)]], 'v9', 'v10');
+    nextFrame($screen);
+    $source->assertRequested('feed', 3);
+});
+
+it('stops holding patches when the fetch fails, and asks again on the next one', function () {
+    $screen = feedScreen();
+    $source = Asgard::fakeFragmentSource();
+
+    ($this->feedPatch)(['op' => 'prepend', 'target' => 'items', 'nodes' => [feedItem(9)]], 'v0', 'v2');
+    nextFrame($screen);
+    $source->fail('feed', ServerRegion::NETWORK);
+    nextFrame($screen);
+
+    ($this->feedPatch)(['op' => 'prepend', 'target' => 'items', 'nodes' => [feedItem(10)]], 'v2', 'v3');
+    nextFrame($screen);
+
+    expect(itemsOn($screen))->toBe([1, 2, 3]);
+    $source->assertRequested('feed', 3);
+});
+
 it('leaves the tree alone when a later node of the patch fails a check', function () {
     $screen = feedScreen();
 
