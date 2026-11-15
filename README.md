@@ -255,6 +255,9 @@ request is out, but it is not declared. The server's `max_age` for a region
 can cut the TTL shorter. A region painted from the cache joins the push stream
 only once the server has answered for it.
 
+If the copy is gone by the time the server says it is good (flushed while the
+request was out), the region asks once more without declaring it.
+
 The server can force a redraw with `Asgard-Cache: invalidate`. Before such a
 fragment replaces a cached copy, `RegionCacheInvalidation` fires. The new
 fragment is applied on the screen's next turn unless a listener keeps the copy:

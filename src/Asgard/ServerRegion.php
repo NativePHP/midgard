@@ -311,6 +311,14 @@ class ServerRegion
     protected static array $held = [];
 
     /**
+     * Requests sent again because the server said a copy the device no
+     * longer holds is good: `id => true`. A `cached` answer to one fails.
+     *
+     * @var array<string, true>
+     */
+    protected static array $retries = [];
+
+    /**
      * Failed actions and regions waiting for their component's next turn.
      *
      * @var list<array{owner: \WeakReference<NativeComponent>, event: ServerActionFailed|ServerRegionFailed}>
@@ -558,7 +566,7 @@ class ServerRegion
     {
         $latest = (static::requested()[$owner] ?? [])[$entry['region']] ?? null;
 
-        unset(static::$pending[$request->id]);
+        unset(static::$pending[$request->id], static::$retries[$request->id]);
 
         if ($latest !== $request->id) {
             NativeRouter::debugLog("Asgard: fragment for [{$request->region}] was superseded by a newer request — dropped.");
@@ -622,9 +630,12 @@ class ServerRegion
      * server screen stops waiting, and the region goes on the push stream
      * with the stored version token.
      *
-     * When the device no longer holds the copy (flushed since), the request
-     * fails with reason `invalid`. `$fragments` and `$refresh` are handled
-     * as for deliver(). Returns whether the region kept or painted a copy.
+     * When the device no longer holds the copy (flushed or evicted while the
+     * request was out), the region is asked for again at once, without
+     * declaring a copy (resend()). Only once: a `cached` answer to that
+     * second request fails it with reason `invalid`. `$fragments` and
+     * `$refresh` are handled as for deliver(). Returns whether the region
+     * kept or painted a copy.
      */
     public static function deliverCached(RegionRequest $request, array $fragments = [], array $refresh = [], bool $invalidate = false): bool
     {
@@ -653,12 +664,18 @@ class ServerRegion
             }
 
             unset(static::$pending[$request->id]);
+            $retry = isset(static::$retries[$request->id]);
+            unset(static::$retries[$request->id]);
 
             if (static::keepCached($owner, $entry['region'], $request->state)) {
                 return true;
             }
 
-            static::fail($owner, $entry['region'], $request, self::INVALID, null, 'the server said the cached copy is good, and the device holds none');
+            if ($retry) {
+                static::fail($owner, $entry['region'], $request, self::INVALID, null, 'the server said the cached copy is good, and the device holds none, even after asking again');
+            } else {
+                static::resend($owner, $entry['region'], $request->reason);
+            }
 
             return false;
         } finally {
@@ -739,7 +756,7 @@ class ServerRegion
             return false;
         }
 
-        unset(static::$pending[$request->id]);
+        unset(static::$pending[$request->id], static::$retries[$request->id]);
         $owner = $entry['owner']->get();
 
         if ($owner === null) {
@@ -1187,7 +1204,10 @@ class ServerRegion
                     continue;
                 }
 
-                $reason = 'the server said the cached copy is good, and the device holds none';
+                // The copy went while the request was out: ask for it again.
+                static::resend($owner, $region);
+
+                continue;
             }
 
             $madeAt = is_int($part['made_at'] ?? null) ? $part['made_at'] : null;
@@ -1738,6 +1758,7 @@ class ServerRegion
         static::$cacheTtls = null;
         static::$copies = null;
         static::$held = [];
+        static::$retries = [];
     }
 
     /**
@@ -1891,6 +1912,46 @@ class ServerRegion
         }
 
         return $acted;
+    }
+
+    /**
+     * Ask for one region again at once, without declaring a copy of it: the
+     * server said a copy is good that the device no longer holds. A render
+     * request, whatever the first one was, since an action has already run.
+     * It becomes the region's latest request and carries the first one's
+     * `reason`.
+     */
+    protected static function resend(NativeComponent $owner, string $region, ?string $reason = null): void
+    {
+        $state = static::stateOf($owner);
+        $cache = static::declaredCache($owner, $state);
+        unset($cache[$region]);
+
+        $request = new RegionRequest(
+            id: 'region-'.(++static::$sequence),
+            component: ComponentAddress::for($owner),
+            region: $region,
+            state: $state,
+            componentClass: $owner::class,
+            cache: $cache,
+            reason: $reason,
+        );
+
+        NativeRouter::debugLog("Asgard: the server said the cached copy of [{$region}] is good, and the device holds none. Asking again.");
+
+        $seconds = static::isScreenBody($owner, $region) ? 0 : static::regionTimeout($owner);
+        static::track($owner, $region, $request, $seconds > 0 ? static::now() + $seconds * 1000 : null);
+        static::$retries[$request->id] = true;
+
+        $states = static::requestedStates()[$owner] ?? [];
+        $states[$region] = $state;
+        static::requestedStates()[$owner] = $states;
+
+        try {
+            app(FragmentSource::class)->request($request);
+        } catch (\Throwable $e) {
+            static::failed($request, self::NETWORK, null, $e->getMessage());
+        }
     }
 
     /** Whether any fragment waits for settle(). */

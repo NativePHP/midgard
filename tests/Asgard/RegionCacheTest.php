@@ -246,19 +246,86 @@ it('keeps the painted copy and the entry as they are on a cached answer', functi
     expect(RegionCache::get(statsKey()))->toBe($entry);
 });
 
-it('fails a cached answer when the device holds no copy any more', function () {
+it('asks again without declaring when the device lost the copy, and fails a second cached answer', function () {
     $heard = [];
     Event::listen(ServerRegionFailed::class, function ($e) use (&$heard) {
         $heard[] = $e->reason;
     });
 
     $source = Asgard::fakeFragmentSource();
+    $screen = screenWithStoredStats();
+    $screen->call('refreshStats');
+    $first = $source->lastRequest('stats');
+    expect($first->cache)->toHaveKey('stats');
+
+    // Flushed while the request was out.
+    RegionCache::flush();
+
+    expect($source->respondCached($first))->toBeFalse();
+
+    $retry = $source->lastRequest('stats');
+    expect($retry->id)->not->toBe($first->id)
+        ->and($retry->cache)->toBe([])
+        ->and($heard)->toBe([]);
+
+    expect($source->respondCached($retry))->toBeFalse();
+    $screen->wait();
+
+    expect($heard)->toBe(['invalid'])
+        ->and($source->lastRequest('stats')->id)->toBe($retry->id);
+});
+
+it('takes a fragment after the retry as a normal answer', function () {
+    $source = Asgard::fakeFragmentSource();
     $screen = Native::test(CachedRegionScreen::class);
 
-    expect($source->respondCached('stats'))->toBeFalse();
-    $screen->wait()->assertSee('Loading stats…');
+    $source->respondCached('stats');
+    expect($source->respond('stats', statsText('Rendered after all'), madeAt: MADE_AT))->toBeTrue();
 
-    expect($heard)->toBe(['invalid']);
+    cachedFrame($screen)->assertSee('Rendered after all');
+});
+
+it('asks again for a cached part of a batch or a call answer the device lost', function () {
+    $source = Asgard::fakeFragmentSource();
+    $server = Asgard::fakeServerTransport();
+    $screen = Native::test(CachedRegionScreen::class);
+    $before = count($source->requests('stats'));
+
+    $source->respondToBatch(fragments: ['stats' => ['cached' => true], 'news' => ['fragment' => statsText('News'), 'made_at' => MADE_AT]]);
+    expect($source->requests('stats'))->toHaveCount($before + 1);
+
+    $source->respond('stats', statsText('Stats'), madeAt: MADE_AT);
+    RegionCache::flush();
+
+    $screen->call('save');
+    $server->resolve(fragments: ['stats' => ['cached' => true]]);
+
+    expect($source->requests('stats'))->toHaveCount($before + 2)
+        ->and($source->lastRequest('stats')->cache)->toBe([]);
+});
+
+it('takes a fragment sent inside the grace window as a normal one, with no event', function () {
+    $heard = 0;
+    Event::listen(RegionCacheInvalidation::class, function () use (&$heard) {
+        $heard++;
+    });
+
+    $source = Asgard::fakeFragmentSource();
+    screenWithStoredStats(maxAge: 60);
+    relaunch();
+
+    // 50 of 60 seconds gone: still declared, but inside the server's grace
+    // window, so the server renders it and sends it with no header.
+    Carbon::setTestNow(Carbon::now()->addSeconds(50));
+    $screen = Native::test(CachedRegionScreen::class)->assertSee('Stats from the server');
+    expect($source->lastRequest('stats')->cache)->toHaveKey('stats');
+
+    $source->respond('stats', statsText('Rendered in grace'), 'v2', madeAt: MADE_AT + 50000, maxAge: 60);
+
+    cachedFrame($screen)->assertSee('Rendered in grace')->assertDontSee('Stats from the server');
+    expect($heard)->toBe(0)
+        ->and(ServerRegion::hasHeld())->toBeFalse()
+        ->and(RegionCache::get(statsKey())['made_at'])->toBe(MADE_AT + 50000);
 });
 
 it('takes cached parts in a batch', function () {
