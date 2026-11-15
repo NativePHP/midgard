@@ -20,6 +20,11 @@ namespace Native\Api\Client\Asgard;
  *
  * `component` is the dot-notation address from §4 of the protocol doc,
  * never a class name.
+ *
+ * `readOnly` is the state keys the server may read but not change
+ * (#[ServerReadOnly] props and #[Computed] values), sent as `read_only`.
+ * `regions` is what `#[Server(render: ...)]` asked the server to redraw.
+ * Both are left off the wire when empty.
  */
 final class ServerRequest
 {
@@ -29,6 +34,8 @@ final class ServerRequest
         public readonly array $args,
         public readonly array $state,
         public readonly array $cache = [],
+        public readonly array $readOnly = [],
+        public readonly array $regions = [],
     ) {}
 
     /** The body a transport signs, encrypts and sends. */
@@ -39,6 +46,8 @@ final class ServerRequest
             'method' => $this->method,
             'args' => $this->args,
             'state' => $this->state,
+            ...($this->readOnly === [] ? [] : ['read_only' => $this->readOnly]),
+            ...($this->regions === [] ? [] : ['regions' => $this->regions]),
             ...($this->cache === [] ? [] : ['cache' => $this->cache]),
         ];
     }

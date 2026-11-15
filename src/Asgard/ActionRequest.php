@@ -11,7 +11,7 @@ namespace Native\Api\Client\Asgard;
  * `args`. On the wire it is a render request that names this one region,
  * the action's own region, in `regions`, plus an `action` member
  * (RegionBatch builds the body). The server runs the action and answers
- * with a `fragments` map: the action's own region, and any other regions
+ * with the state it changed in `delta`, applied first, and a `fragments` map: the action's own region, and any other regions
  * of the component it redrew. That goes back through
  * ServerRegion::deliverBatch() like any other answer. Sending one
  * supersedes a region request still in flight, so an older render cannot
@@ -32,7 +32,8 @@ class ActionRequest extends RegionRequest
         public readonly array $args = [],
         ?string $componentClass = null,
         array $cache = [],
+        array $readOnly = [],
     ) {
-        parent::__construct($id, $component, $region, $state, $componentClass, $cache);
+        parent::__construct($id, $component, $region, $state, $componentClass, $cache, readOnly: $readOnly);
     }
 }

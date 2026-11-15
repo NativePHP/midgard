@@ -172,6 +172,8 @@ class ServerMethods
             args: $args,
             state: $state,
             cache: ServerRegion::declaredCache($component, ServerRegion::stateOf($component)),
+            readOnly: ComponentState::readOnly($component, $state),
+            regions: static::regionsFor($component, static::renderOf($component, $method)),
         );
 
         return static::begin(
@@ -190,17 +192,22 @@ class ServerMethods
      * regions and hints. A failure fires ServerActionFailed with `action`
      * set to the method's name.
      *
+     * `$render` names regions for the server to redraw after the method,
+     * as `#[Server(render: ...)]` does for a call.
+     *
      * Two failures happen here, before anything is sent, and fire the
      * event at once: `unreadable` when the path is not a readable regular
      * file, and `too_large` when it is over `midgard.asgard.upload_max`.
      *
      * Returns the request id, or null when nothing is in flight.
      */
-    public static function upload(NativeComponent $component, string $method, string $path, array $args = []): ?string
+    public static function upload(NativeComponent $component, string $method, string $path, array $args = [], bool|string|array $render = false): ?string
     {
         if (! preg_match('/^[A-Za-z_][A-Za-z0-9_]{0,99}$/D', $method)) {
             throw new \InvalidArgumentException('['.$method.'] is not a method name, so it cannot be uploaded to.');
         }
+
+        Server::checkRender($render);
 
         $address = ComponentAddress::for($component);
         $file = static::readableFile($path);
@@ -235,6 +242,8 @@ class ServerMethods
             mime: UploadRequest::guessMime($real),
             size: $size,
             cache: ServerRegion::declaredCache($component, ServerRegion::stateOf($component)),
+            readOnly: ComponentState::readOnly($component, $state),
+            regions: static::regionsFor($component, $render),
         );
 
         return static::begin(
@@ -406,7 +415,7 @@ class ServerMethods
             return true;
         }
 
-        [$applied, $refused] = static::reconcile(
+        [$applied, $refused, $changed] = static::reconcile(
             $component,
             is_array($payload['delta'] ?? null) ? $payload['delta'] : [],
             $entry['sent'],
@@ -417,6 +426,7 @@ class ServerMethods
             $entry,
             is_array($payload['fragments'] ?? null) ? $payload['fragments'] : [],
             ($payload['invalidate'] ?? false) === true,
+            $changed,
         );
 
         if (is_array($payload['refresh'] ?? null) && $payload['refresh'] !== []) {
@@ -432,6 +442,72 @@ class ServerMethods
         ));
 
         return true;
+    }
+
+    /**
+     * Apply the `delta` of a render or action answer (protocol §3.1, §10)
+     * to the component that asked, the way a call's delta is applied:
+     * compare-and-set against `$sent`, the state the request carried.
+     *
+     * Only the delta's own keys are compared, so an empty delta costs
+     * nothing. Returns [applied, refused, changed], where `changed` says
+     * whether any prop now holds a different value. A delta that only
+     * repeats what the component holds changes nothing.
+     *
+     * @return array{0: array, 1: array, 2: bool}
+     */
+    public static function applyDelta(NativeComponent $component, array $delta, array $sent): array
+    {
+        if ($delta === []) {
+            return [[], [], false];
+        }
+
+        return static::reconcile($component, $delta, static::fingerprints(array_intersect_key($sent, $delta)));
+    }
+
+    /** The `render` of a method's #[Server] attribute. */
+    protected static function renderOf(NativeComponent $component, string $method): bool|string|array
+    {
+        $attributes = (new \ReflectionMethod($component, $method))->getAttributes(Server::class);
+
+        return $attributes === [] ? false : $attributes[0]->newInstance()->render;
+    }
+
+    /**
+     * The `regions` a call or upload asks the server to redraw. `true` is
+     * every server region the component has declared, as far as the device
+     * knows (ServerRegion::declaredRegions()), at most MAX_REGIONS of them.
+     * Names are sent as given, and the server refuses one the component
+     * does not have.
+     *
+     * @return list<string>
+     */
+    protected static function regionsFor(NativeComponent $component, bool|string|array $render): array
+    {
+        if ($render === false) {
+            return [];
+        }
+
+        if ($render !== true) {
+            return array_values(array_unique(is_string($render) ? [$render] : $render));
+        }
+
+        $regions = ServerRegion::declaredRegions($component);
+
+        if (count($regions) > ServerRegion::MAX_REGIONS) {
+            NativeRouter::debugLog(
+                'Asgard: '.$component::class.' declares '.count($regions).' server regions, and a call redraws at most '
+                .ServerRegion::MAX_REGIONS.'. The rest are not asked for.'
+            );
+
+            $regions = array_slice($regions, 0, ServerRegion::MAX_REGIONS);
+        }
+
+        if ($regions === []) {
+            NativeRouter::debugLog('Asgard: render: true on '.$component::class.', which has drawn no server region yet. Nothing to redraw.');
+        }
+
+        return $regions;
     }
 
     /**
@@ -719,12 +795,16 @@ class ServerMethods
      *    server wins — correct, because the client's value IS the value
      *    the server was reasoning about.
      *
-     * @return array{0: array, 1: array} [applied, refused]
+     * Read-only keys are refused before any of that: #[LocalOnly],
+     * #[ServerReadOnly] and #[Computed] values, and app-wide config keys.
+     *
+     * @return array{0: array, 1: array, 2: bool} [applied, refused, changed]
      */
     protected static function reconcile(NativeComponent $component, array $delta, array $sent): array
     {
         $applied = [];
         $refused = [];
+        $changed = false;
         $writable = ComponentState::properties($component);
 
         foreach ($delta as $prop => $value) {
@@ -735,6 +815,18 @@ class ServerMethods
             if (ComponentState::isLocalOnly($component, $prop)) {
                 NativeRouter::debugLog(
                     'Asgard: delta prop ['.$prop.'] is #[LocalOnly] on '.$component::class.' — ignored.'
+                );
+
+                $refused[$prop] = $value;
+
+                continue;
+            }
+
+            // The server may read a #[ServerReadOnly] prop but not change
+            // it. A server that sends one anyway is ignored.
+            if (ComponentState::isServerReadOnly($component, $prop)) {
+                NativeRouter::debugLog(
+                    'Asgard: delta prop ['.$prop.'] is #[ServerReadOnly] on '.$component::class.' — ignored.'
                 );
 
                 $refused[$prop] = $value;
@@ -799,12 +891,17 @@ class ServerMethods
             // the authority for the state it changed, and #[Locked]
             // exists to stop a *binding* writing a prop, not to stop the
             // server that owns it.
-            $writable[$prop]->setValue($component, $value);
+            //
+            // A value the prop already holds is not written again.
+            if (static::fingerprint($value) !== $current) {
+                $writable[$prop]->setValue($component, $value);
+                $changed = true;
+            }
 
             $applied[$prop] = $value;
         }
 
-        return [$applied, $refused];
+        return [$applied, $refused, $changed];
     }
 
     /**
@@ -823,11 +920,18 @@ class ServerMethods
      * @param  array{stamp: string, state: array}  $entry
      * @return array region => why the fragment was refused
      */
-    protected static function applyFragments(NativeComponent $component, array $entry, array $fragments, bool $invalidate = false): array
+    protected static function applyFragments(NativeComponent $component, array $entry, array $fragments, bool $invalidate = false, bool $changed = false): array
     {
-        return $fragments === []
-            ? []
-            : ServerRegion::paintInline($component, $entry['stamp'], $fragments, $entry['state'], $invalidate);
+        if ($fragments === []) {
+            return [];
+        }
+
+        // The server drew its fragments for the state after its method ran,
+        // which is the state the device has now when the delta changed it.
+        // A `{cached: true}` part's copy is still found by the state sent.
+        $state = $changed ? ServerRegion::stateOf($component) : $entry['state'];
+
+        return ServerRegion::paintInline($component, $entry['stamp'], $fragments, $state, $invalidate, $entry['state']);
     }
 
     /**

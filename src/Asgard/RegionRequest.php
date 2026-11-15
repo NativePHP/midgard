@@ -24,6 +24,9 @@ namespace Native\Api\Client\Asgard;
  * of this component's regions the device holds and still counts as good
  * (RegionCache). It is sent only when it has an entry.
  *
+ * `readOnly` is the keys of `state` the server may read but not change
+ * (ComponentState::readOnly()), sent as `read_only` when there are any.
+ *
  * `reason` is `push` for a fetch a push stream signal caused, and null
  * (left off the wire) for every other.
  */
@@ -37,6 +40,7 @@ class RegionRequest
         public readonly ?string $componentClass = null,
         public readonly array $cache = [],
         public readonly ?string $reason = null,
+        public readonly array $readOnly = [],
     ) {}
 
     /** The body this region goes out with when it is asked for alone. */

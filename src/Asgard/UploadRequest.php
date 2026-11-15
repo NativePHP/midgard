@@ -5,7 +5,8 @@ namespace Native\Api\Client\Asgard;
 /**
  * One file on its way to an `#[Upload]` method (protocol §10.6).
  *
- * Like a ServerRequest it carries the method, args and state.
+ * Like a ServerRequest it carries the method, args and state, and the
+ * `read_only` keys and `regions` to redraw.
  * It also names the file: its resolved path on the device, its size when
  * it was checked, and a filename and mime type the server only shows.
  * The server sniffs the real type from the bytes.
@@ -26,6 +27,8 @@ final class UploadRequest
         public readonly string $mime,
         public readonly int $size,
         public readonly array $cache = [],
+        public readonly array $readOnly = [],
+        public readonly array $regions = [],
     ) {}
 
     /** The frame header, without the bytes. A transport adds `protocol`. */
@@ -36,6 +39,8 @@ final class UploadRequest
             'method' => $this->method,
             'args' => $this->args,
             'state' => $this->state,
+            ...($this->readOnly === [] ? [] : ['read_only' => $this->readOnly]),
+            ...($this->regions === [] ? [] : ['regions' => $this->regions]),
             'filename' => $this->filename,
             'mime' => $this->mime,
             'size' => $this->size,

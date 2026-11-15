@@ -561,18 +561,18 @@ it('reads made_at, max_age, cached answers and a signed invalidate header', func
     $client = AsgardClient::make(['base' => 'https://asgard.test/_asgard', 'key' => 'test-key', 'timeout' => 5, 'store' => null], $server->client());
     $body = ['protocol' => 1, 'component' => 'app.home', 'regions' => ['stats'], 'state' => [], 'cache' => ['stats' => ['made_at' => MADE_AT, 'ttl' => 60]]];
 
-    $server->plaintext = json_encode(['protocol' => 1, 'fragments' => ['stats' => ['fragment' => statsText('x'), 'made_at' => MADE_AT, 'max_age' => 60]]]);
-    expect($client->render($body))->toBe(['ok' => true, 'status' => 200, 'fragments' => ['stats' => ['fragment' => statsText('x'), 'made_at' => MADE_AT, 'max_age' => 60]]])
+    $server->plaintext = json_encode(['protocol' => 1, 'delta' => (object) [], 'fragments' => ['stats' => ['fragment' => statsText('x'), 'made_at' => MADE_AT, 'max_age' => 60]]]);
+    expect($client->render($body))->toBe(['ok' => true, 'status' => 200, 'delta' => [], 'fragments' => ['stats' => ['fragment' => statsText('x'), 'made_at' => MADE_AT, 'max_age' => 60]]])
         ->and($server->requests[0]['body']['cache'])->toBe(['stats' => ['made_at' => MADE_AT, 'ttl' => 60]]);
 
-    $server->plaintext = json_encode(['protocol' => 1, 'fragments' => ['stats' => ['cached' => true]]]);
-    expect($client->render($body))->toBe(['ok' => true, 'status' => 200, 'fragments' => ['stats' => ['cached' => true]]]);
+    $server->plaintext = json_encode(['protocol' => 1, 'delta' => (object) [], 'fragments' => ['stats' => ['cached' => true]]]);
+    expect($client->render($body))->toBe(['ok' => true, 'status' => 200, 'delta' => [], 'fragments' => ['stats' => ['cached' => true]]]);
 
-    $server->plaintext = json_encode(['protocol' => 1, 'fragments' => ['stats' => ['cached' => true], 'news' => ['fragment' => statsText('n'), 'made_at' => 5]]]);
+    $server->plaintext = json_encode(['protocol' => 1, 'delta' => (object) [], 'fragments' => ['stats' => ['cached' => true], 'news' => ['fragment' => statsText('n'), 'made_at' => 5]]]);
     expect($client->render(['regions' => ['stats', 'news']] + $body)['fragments'])
         ->toBe(['stats' => ['cached' => true], 'news' => ['fragment' => statsText('n'), 'made_at' => 5]]);
 
-    $server->plaintext = json_encode(['protocol' => 1, 'fragments' => ['stats' => ['fragment' => statsText('x'), 'made_at' => MADE_AT]]]);
+    $server->plaintext = json_encode(['protocol' => 1, 'delta' => (object) [], 'fragments' => ['stats' => ['fragment' => statsText('x'), 'made_at' => MADE_AT]]]);
     $server->cacheHeader = 'invalidate';
     expect($client->render($body)['invalidate'] ?? null)->toBeTrue();
 
@@ -619,4 +619,48 @@ it('takes a forced call answer with no fragments quietly', function () {
 
     $screen->wait()->assertSee('Stats from the server');
     expect($heard)->toBe(0)->and(ServerRegion::hasHeld())->toBeFalse();
+});
+
+// ── State on answers ────────────────────────────────
+
+it('stores a fragment under the state its answer\'s delta left', function () {
+    $source = Asgard::fakeFragmentSource();
+    $screen = Native::test(CachedRegionScreen::class);
+
+    $source->respond('stats', statsText('For 30d'), 'v1', madeAt: MADE_AT, delta: ['range' => '30d']);
+    cachedFrame($screen)->assertSee('Range 30d');
+
+    expect(RegionCache::get(statsKey(['range' => '30d']))['fragment'] ?? null)->toBe(statsText('For 30d'))
+        ->and(RegionCache::get(statsKey()))->toBeNull();
+});
+
+it('keeps the cached copy for a cached answer with a delta, and applies the delta', function () {
+    $source = Asgard::fakeFragmentSource();
+    $screen = screenWithStoredStats();
+    $screen->call('refreshStats');
+
+    expect($source->lastRequest('stats')->cache)->toHaveKey('stats')
+        ->and($source->respondCached('stats', delta: ['range' => '7d']))->toBeTrue()
+        ->and(ServerRegion::repaintPending())->toBeFalse();
+
+    $screen->call('refreshStats');
+    expect($source->respondCached('stats', delta: ['range' => '30d']))->toBeTrue()
+        ->and($screen->get('range'))->toBe('30d')
+        ->and(ServerRegion::repaintPending())->toBeTrue()
+        ->and(ServerRegion::subscriptions()[0]['state'])->toBe(['range' => '30d']);
+});
+
+it('declares cached copies on a call that asks for regions', function () {
+    $server = Asgard::fakeServerTransport();
+    $screen = screenWithStoredStats();
+
+    $screen->instance()->uploadToServer('savePhoto', __FILE__, render: 'stats');
+
+    expect($server->lastUpload()->toArray())->toMatchArray([
+        'regions' => ['stats'],
+        'cache' => ['stats' => ['made_at' => MADE_AT, 'ttl' => 60]],
+    ]);
+
+    $server->resolve(fragments: ['stats' => ['cached' => true]]);
+    cachedFrame($screen)->assertSee('Stats from the server');
 });

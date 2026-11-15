@@ -311,8 +311,12 @@ class AsgardClient
      * `refresh`, hints naming other components. `invalidate` is true when
      * the response carried a signed `Asgard-Cache: invalidate`.
      *
+     * Every answer, a plain render's and an action's, carries `delta`: the
+     * state the server changed, as a call's answer does. An object, possibly
+     * empty. Without one the answer is a bad response.
+     *
      * @param  array<string, mixed>  $body  The wire body, protocol member included.
-     * @return array{ok: bool, status: int, fragments?: array<string, array{fragment?: mixed, version?: string, chrome?: array, made_at?: int, max_age?: int, cached?: true}>, refresh?: list<array{component: string, region?: string}>, invalidate?: true, error?: string}
+     * @return array{ok: bool, status: int, delta?: array<string, mixed>, fragments?: array<string, array{fragment?: mixed, version?: string, chrome?: array, made_at?: int, max_age?: int, cached?: true}>, refresh?: list<array{component: string, region?: string}>, invalidate?: true, error?: string}
      */
     public function render(array $body): array
     {
@@ -322,13 +326,14 @@ class AsgardClient
             return $result;
         }
 
+        $delta = $result['json']['delta'] ?? null;
         $more = array_key_exists('fragments', $result['json']) ? self::more($result['json']) : null;
 
-        if ($more === null) {
+        if ($more === null || ! is_array($delta) || ($delta !== [] && array_is_list($delta))) {
             return ['ok' => false, 'status' => $result['status'], 'error' => 'bad response'];
         }
 
-        return ['ok' => true, 'status' => $result['status'], ...$more, ...($result['invalidate'] ? ['invalidate' => true] : [])];
+        return ['ok' => true, 'status' => $result['status'], 'delta' => $delta, ...$more, ...($result['invalidate'] ? ['invalidate' => true] : [])];
     }
 
     /**

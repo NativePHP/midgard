@@ -21,8 +21,9 @@ use Native\Api\Client\Asgard\RegionBatch;
  * request() gets a RegionBatch: the regions of one component instance
  * asked for at the same moment, one or more, sharing one state. It is one
  * request on the wire, with `regions` as a list even for one region. The
- * answer is a `fragments` map, which goes to
- * `ServerRegion::deliverBatch($batch, $fragments)`. Each region in it is
+ * answer is a `fragments` map and a `delta`, which go to
+ * `ServerRegion::deliverBatch($batch, $fragments, delta: $delta)`. The delta
+ * is applied to the component before any fragment is painted. Each region in it is
  * still its own RegionRequest, with its own timer and failure, and a
  * region the map left out fails with reason `invalid`.
  *

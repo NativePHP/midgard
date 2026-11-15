@@ -15,7 +15,7 @@ class RenderCall
     /**
      * @param  array{base: string, key: string, timeout: float, store: ?string}  $config
      * @param  array<string, mixed>  $body  The RegionBatch wire body.
-     * @return array{ok: bool, status: int, fragments?: array<string, mixed>, refresh?: list<array>, invalidate?: true, error?: string}
+     * @return array{ok: bool, status: int, delta?: array<string, mixed>, fragments?: array<string, mixed>, refresh?: list<array>, invalidate?: true, error?: string}
      */
     public static function send(array $config, array $body): array
     {

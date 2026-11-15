@@ -16,7 +16,9 @@ use Native\Mobile\AsyncTask;
  * repaints.
  *
  * Every request names `regions`, a list even for one region (protocol
- * §3.1), and every answer is a `fragments` map with one part per region.
+ * §3.1), and every answer is a `fragments` map with one part per region,
+ * next to one `delta` for the component's state, applied before the
+ * fragments are painted.
  * Each region is still its own request on the device. The answer is handed
  * to ServerRegion::deliverBatch(), and a request that fails fails every
  * region in it through failedBatch().
@@ -137,6 +139,7 @@ class HttpFragmentSource implements FragmentSource
                 $result['fragments'],
                 ($result['invalidate'] ?? false) === true,
                 $result['refresh'] ?? [],
+                is_array($result['delta'] ?? null) ? $result['delta'] : [],
             );
 
             return;

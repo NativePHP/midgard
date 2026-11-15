@@ -606,8 +606,22 @@ class ServerRegion
      * region cache. `$invalidate` is the response's `Asgard-Cache:
      * invalidate`: a region that holds a cached copy then fires
      * RegionCacheInvalidation, and its fragment waits for settle().
+     *
+     * `$delta` is the answer's state delta, applied to the component before
+     * anything is painted, as applyDelta() says.
      */
-    public static function deliver(RegionRequest $request, array|string $tree, ?array $chrome = null, ?string $version = null, array $fragments = [], array $refresh = [], ?int $madeAt = null, ?int $maxAge = null, bool $invalidate = false): bool
+    public static function deliver(RegionRequest $request, array|string $tree, ?array $chrome = null, ?string $version = null, array $fragments = [], array $refresh = [], ?int $madeAt = null, ?int $maxAge = null, bool $invalidate = false, array $delta = []): bool
+    {
+        $state = static::applyDelta([$request], $delta);
+
+        return static::deliverWith($request, $state, $tree, $chrome, $version, $fragments, $refresh, $madeAt, $maxAge, $invalidate);
+    }
+
+    /**
+     * deliver() once the delta is applied. `$state` is the state the
+     * fragment was drawn for (applyDelta()).
+     */
+    protected static function deliverWith(RegionRequest $request, array $state, array|string $tree, ?array $chrome, ?string $version, array $fragments, array $refresh, ?int $madeAt, ?int $maxAge, bool $invalidate): bool
     {
         $entry = static::$pending[$request->id] ?? null;
 
@@ -631,10 +645,10 @@ class ServerRegion
         // They are applied after the action's own fragment, whatever
         // became of it, and each one is checked on its own.
         try {
-            return static::deliverTo($owner, $entry, $request, $tree, $chrome, $version, $madeAt, $maxAge, $invalidate);
+            return static::deliverTo($owner, $entry, $request, $state, $tree, $chrome, $version, $madeAt, $maxAge, $invalidate);
         } finally {
             if ($fragments !== []) {
-                static::paintInline($owner, $request->id, $fragments, $request->state, $invalidate);
+                static::paintInline($owner, $request->id, $fragments, $state, $invalidate, $request->state);
             }
 
             if ($refresh !== []) {
@@ -648,7 +662,7 @@ class ServerRegion
      *
      * @param  array{owner: \WeakReference<NativeComponent>, region: string}  $entry
      */
-    protected static function deliverTo(NativeComponent $owner, array $entry, RegionRequest $request, array|string $tree, ?array $chrome, ?string $version, ?int $madeAt = null, ?int $maxAge = null, bool $invalidate = false): bool
+    protected static function deliverTo(NativeComponent $owner, array $entry, RegionRequest $request, array $state, array|string $tree, ?array $chrome, ?string $version, ?int $madeAt = null, ?int $maxAge = null, bool $invalidate = false): bool
     {
         $latest = (static::requested()[$owner] ?? [])[$entry['region']] ?? null;
 
@@ -660,11 +674,11 @@ class ServerRegion
             return false;
         }
 
-        if ($invalidate && static::hold($owner, $entry['region'], $request->id, $request, $request->state, $tree, $chrome, $version, $madeAt, $maxAge)) {
+        if ($invalidate && static::hold($owner, $entry['region'], $request->id, $request, $state, $tree, $chrome, $version, $madeAt, $maxAge)) {
             return true;
         }
 
-        return static::applyAnswer($owner, $entry['region'], $request, $tree, $chrome, $version, $madeAt, $maxAge);
+        return static::applyAnswer($owner, $entry['region'], $request, $state, $tree, $chrome, $version, $madeAt, $maxAge);
     }
 
     /**
@@ -672,7 +686,7 @@ class ServerRegion
      * and put the region on the push stream. A fragment that cannot be
      * rendered fails the request instead.
      */
-    protected static function applyAnswer(NativeComponent $owner, string $region, RegionRequest $request, array|string $tree, ?array $chrome, ?string $version, ?int $madeAt, ?int $maxAge): bool
+    protected static function applyAnswer(NativeComponent $owner, string $region, RegionRequest $request, array $state, array|string $tree, ?array $chrome, ?string $version, ?int $madeAt, ?int $maxAge): bool
     {
         $rejected = null;
 
@@ -699,9 +713,9 @@ class ServerRegion
         }
 
         static::applyChrome($owner, $chrome);
-        static::answer($owner, $region, $request->state, $version);
-        static::remember($owner, $region, $request->state, $tree, $chrome, $version, $madeAt, $maxAge);
-        static::replayDeferred($owner, $region, $request->state);
+        static::answer($owner, $region, $state, $version);
+        static::remember($owner, $region, $state, $tree, $chrome, $version, $madeAt, $maxAge);
+        static::replayDeferred($owner, $region, $state);
 
         return true;
     }
@@ -720,11 +734,18 @@ class ServerRegion
      * When the device no longer holds the copy (flushed or evicted while the
      * request was out), the region is asked for again at once, without
      * declaring a copy (resend()). Only once: a `cached` answer to that
-     * second request fails it with reason `invalid`. `$fragments` and
-     * `$refresh` are handled as for deliver(). Returns whether the region
+     * second request fails it with reason `invalid`. `$fragments`,
+     * `$refresh` and `$delta` are handled as for deliver(): a cached answer
+     * still carries a delta, applied first. Returns whether the region
      * kept or painted a copy.
      */
-    public static function deliverCached(RegionRequest $request, array $fragments = [], array $refresh = [], bool $invalidate = false): bool
+    public static function deliverCached(RegionRequest $request, array $fragments = [], array $refresh = [], bool $invalidate = false, array $delta = []): bool
+    {
+        return static::deliverCachedWith($request, static::applyDelta([$request], $delta), $fragments, $refresh, $invalidate);
+    }
+
+    /** deliverCached() once the delta is applied. */
+    protected static function deliverCachedWith(RegionRequest $request, array $state, array $fragments, array $refresh, bool $invalidate): bool
     {
         $entry = static::$pending[$request->id] ?? null;
 
@@ -755,7 +776,7 @@ class ServerRegion
             unset(static::$retries[$request->id]);
             static::defer($owner, $entry['region'], null);
 
-            if (static::keepCached($owner, $entry['region'], $request->state)) {
+            if (static::keepCached($owner, $entry['region'], $request->state, $state)) {
                 return true;
             }
 
@@ -768,7 +789,7 @@ class ServerRegion
             return false;
         } finally {
             if ($fragments !== []) {
-                static::paintInline($owner, $request->id, $fragments, $request->state, $invalidate);
+                static::paintInline($owner, $request->id, $fragments, $state, $invalidate, $request->state);
             }
 
             if ($refresh !== []) {
@@ -780,8 +801,12 @@ class ServerRegion
     /**
      * Keep, or paint, the stored copy of a region the server answered
      * `cached` for, and count it as answered. False when there is no copy.
+     *
+     * The copy is found by `$state`, the state the request declared it for.
+     * It is answered for `$answered`, the state after the answer's delta,
+     * which is the same unless the delta changed something.
      */
-    protected static function keepCached(NativeComponent $owner, string $region, array $state): bool
+    protected static function keepCached(NativeComponent $owner, string $region, array $state, ?array $answered = null): bool
     {
         $stored = RegionCache::get(RegionCache::key(ComponentAddress::for($owner), $region, $state));
 
@@ -806,7 +831,7 @@ class ServerRegion
         }
 
         static::setCopy($owner, $region, $stored['made_at'], false);
-        static::answer($owner, $region, $state, $stored['version']);
+        static::answer($owner, $region, $answered ?? $state, $stored['version']);
 
         return true;
     }
@@ -1780,11 +1805,15 @@ class ServerRegion
      * With `$invalidate`, a part for a region that holds a cached copy fires
      * RegionCacheInvalidation and waits for settle(), as deliver() says.
      *
+     * `$sent` is the state the request carried, which a `{cached: true}`
+     * part's copy is found by, when the answer's delta has changed `$state`
+     * since.
+     *
      * Returns `region => why` for each part that was not painted.
      *
      * @return array<string, string>
      */
-    public static function paintInline(NativeComponent $owner, string $id, array $fragments, array $state, bool $invalidate = false): array
+    public static function paintInline(NativeComponent $owner, string $id, array $fragments, array $state, bool $invalidate = false, ?array $sent = null): array
     {
         $refused = [];
         $sequence = static::sequenceOf($id);
@@ -1802,7 +1831,7 @@ class ServerRegion
             };
 
             if ($reason === null && $cached) {
-                if (static::keepCached($owner, $region, $state)) {
+                if (static::keepCached($owner, $region, $sent ?? $state, $state)) {
                     $requested = static::requested()[$owner];
                     $requested[$region] = $id;
                     static::requested()[$owner] = $requested;
@@ -1875,15 +1904,20 @@ class ServerRegion
      * became of the action's own part. A plain render's answer carries
      * neither, and parts it was not asked for are ignored.
      *
+     * `$delta` is the answer's one state delta for the whole batch. It is
+     * applied before any part is painted, as applyDelta() says.
+     *
      * @param  array<string, mixed>  $fragments  `{region: {fragment, version?, chrome?, made_at?, max_age?} | {cached: true}}`
      * @param  list<array{component: string, region?: string}>  $refresh
+     * @param  array<string, mixed>  $delta
      */
-    public static function deliverBatch(RegionBatch $batch, array $fragments, bool $invalidate = false, array $refresh = []): int
+    public static function deliverBatch(RegionBatch $batch, array $fragments, bool $invalidate = false, array $refresh = [], array $delta = []): int
     {
+        $state = static::applyDelta($batch->requests, $delta);
         $action = $batch->action();
 
         if ($action !== null) {
-            return static::deliverAction($action, $fragments, $refresh, $invalidate);
+            return static::deliverAction($action, $state, $fragments, $refresh, $invalidate);
         }
 
         $painted = 0;
@@ -1891,7 +1925,7 @@ class ServerRegion
 
         foreach ($batch->requests as $request) {
             try {
-                $painted += static::deliverPart($request, $fragments[$request->region] ?? null, [], [], $invalidate) ? 1 : 0;
+                $painted += static::deliverPart($request, $state, $fragments[$request->region] ?? null, [], [], $invalidate) ? 1 : 0;
             } catch (\RuntimeException $e) {
                 $thrown ??= $e;
             }
@@ -1905,14 +1939,14 @@ class ServerRegion
     }
 
     /** An action's answer: its own part, then the rest. Returns 1 when its own region painted. */
-    protected static function deliverAction(ActionRequest $action, array $fragments, array $refresh, bool $invalidate): int
+    protected static function deliverAction(ActionRequest $action, array $state, array $fragments, array $refresh, bool $invalidate): int
     {
         $others = $fragments;
         unset($others[$action->region]);
         $part = $fragments[$action->region] ?? null;
 
         if (static::isPart($part)) {
-            return static::deliverPart($action, $part, $others, $refresh, $invalidate) ? 1 : 0;
+            return static::deliverPart($action, $state, $part, $others, $refresh, $invalidate) ? 1 : 0;
         }
 
         // The action's own region is missing. It fails, and the rest of the
@@ -1923,7 +1957,7 @@ class ServerRegion
         static::failed($action, self::INVALID, null, 'the answer has no fragment for this region');
 
         if ($owner !== null && $others !== []) {
-            static::paintInline($owner, $action->id, $others, $action->state, $invalidate);
+            static::paintInline($owner, $action->id, $others, $state, $invalidate, $action->state);
         }
 
         if ($refresh !== []) {
@@ -1948,7 +1982,7 @@ class ServerRegion
     }
 
     /** Deliver one region's part, or fail the region when the part is missing or not one. */
-    protected static function deliverPart(RegionRequest $request, mixed $part, array $others, array $refresh, bool $invalidate): bool
+    protected static function deliverPart(RegionRequest $request, array $state, mixed $part, array $others, array $refresh, bool $invalidate): bool
     {
         if (! static::isPart($part)) {
             static::failed($request, self::INVALID, null, 'the answer has no fragment for this region');
@@ -1957,11 +1991,12 @@ class ServerRegion
         }
 
         if (! array_key_exists('fragment', $part)) {
-            return static::deliverCached($request, $others, $refresh, $invalidate);
+            return static::deliverCachedWith($request, $state, $others, $refresh, $invalidate);
         }
 
-        return static::deliver(
+        return static::deliverWith(
             $request,
+            $state,
             $part['fragment'],
             is_array($part['chrome'] ?? null) ? $part['chrome'] : null,
             is_string($part['version'] ?? null) ? $part['version'] : null,
@@ -1971,6 +2006,79 @@ class ServerRegion
             is_int($part['max_age'] ?? null) ? $part['max_age'] : null,
             $invalidate,
         );
+    }
+
+    /**
+     * Apply an answer's state delta (protocol §3.1, §10) to the component
+     * that asked, before any of its fragments are painted, the way a
+     * `#[Server]` call's delta is applied (ServerMethods::applyDelta()):
+     * prop by prop, under compare-and-set against the state the request
+     * carried, with read-only, local-only and unknown keys ignored.
+     *
+     * `$requests` are the regions of one answer, which share one owner and
+     * one state. The delta goes to the owner of the first still in flight,
+     * superseded or not: the server's state changes are real even when a
+     * newer request will redraw the region, and compare-and-set keeps a
+     * stale delta from undoing a newer one. A delta for requests no longer
+     * in flight (timed out, failed, or the component gone) is dropped with
+     * them.
+     *
+     * Returns the state the fragments were drawn for. That is the request's
+     * state, unless the delta changed a prop: then it is the component's
+     * state now, which is what its next request will carry, so the region
+     * cache and the push stream key the answer by it. Only then is a repaint
+     * flagged.
+     *
+     * An empty delta returns at once, and one that only repeats what the
+     * component holds writes nothing, so neither costs a frame or changes
+     * the push stream set.
+     *
+     * @param  non-empty-list<RegionRequest>  $requests
+     */
+    protected static function applyDelta(array $requests, array $delta): array
+    {
+        $state = $requests[0]->state;
+
+        if ($delta === []) {
+            return $state;
+        }
+
+        foreach ($requests as $request) {
+            $owner = (static::$pending[$request->id] ?? null)['owner'] ?? null;
+            $owner = $owner?->get();
+
+            if ($owner === null) {
+                continue;
+            }
+
+            [, , $changed] = ServerMethods::applyDelta($owner, $delta, $request->state);
+
+            if (! $changed) {
+                return $state;
+            }
+
+            static::$repaint = true;
+
+            return static::stateOf($owner);
+        }
+
+        NativeRouter::debugLog('Asgard: a state delta for a request no longer in flight — dropped.');
+
+        return $state;
+    }
+
+    /**
+     * The server regions a component has drawn, by name, in the order it
+     * first drew them. A duplicate name (`stats#2`) is left out, since it
+     * addresses nothing. `#[Server(render: true)]` redraws these.
+     *
+     * @return list<string>
+     */
+    public static function declaredRegions(NativeComponent $owner): array
+    {
+        $names = array_map('strval', array_keys(static::cacheTtls()[$owner] ?? []));
+
+        return array_values(array_filter($names, fn (string $name) => ! str_contains($name, '#')));
     }
 
     /**
@@ -2392,6 +2500,7 @@ class ServerRegion
             args: array_values($args),
             componentClass: $owner::class,
             cache: static::declaredCache($owner, $state),
+            readOnly: ComponentState::readOnly($owner, $state),
         );
 
         $seconds = static::actionTimeout($owner);
@@ -2560,7 +2669,7 @@ class ServerRegion
 
             if ($entry['request'] !== null) {
                 try {
-                    static::applyAnswer($owner, $entry['region'], $entry['request'], $entry['tree'], $entry['chrome'], $entry['version'], $entry['made_at'], $entry['max_age']);
+                    static::applyAnswer($owner, $entry['region'], $entry['request'], $entry['state'], $entry['tree'], $entry['chrome'], $entry['version'], $entry['made_at'], $entry['max_age']);
                 } catch (\RuntimeException $e) {
                     NativeRouter::debugLog("Asgard: fragment for region [{$entry['region']}] refused: ".$e->getMessage());
                 }
@@ -2612,6 +2721,7 @@ class ServerRegion
             componentClass: $owner::class,
             cache: $cache,
             reason: $reason,
+            readOnly: ComponentState::readOnly($owner, $state),
         );
 
         NativeRouter::debugLog("Asgard: the server said the cached copy of [{$region}] is good, and the device holds none. Asking again.");
@@ -2891,6 +3001,7 @@ class ServerRegion
     {
         $state = static::stateOf($owner);
         $cache = static::declaredCache($owner, $state);
+        $readOnly = ComponentState::readOnly($owner, $state);
         $requests = [];
 
         foreach ($regions as $region) {
@@ -2902,6 +3013,7 @@ class ServerRegion
                 componentClass: $owner::class,
                 cache: $cache,
                 reason: $reason,
+                readOnly: $readOnly,
             );
 
             $seconds = static::isScreenBody($owner, $region) ? 0 : static::regionTimeout($owner);

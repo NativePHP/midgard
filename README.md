@@ -182,16 +182,16 @@ one request, at most 16 at a time.
 
 ```json
 {"protocol":1,"component":"app.native.screens.home","regions":["stats","feed"],
- "state":{"period":"week"}}
+ "state":{"period":"week","user_id":7},"read_only":["user_id"]}
 ```
 
-Every answer is a `fragments` map with one part per region. A part has the
-region's `version`, `made_at`, an optional `max_age` and the `fragment`. A
-server screen's part has `chrome` too. A part of `{"cached":true}` means the
-copy the request declared is still good.
+Every answer is a `fragments` map with one part per region, next to a
+`delta`. A part has the region's `version`, `made_at`, an optional `max_age`
+and the `fragment`. A server screen's part has `chrome` too. A part of
+`{"cached":true}` means the copy the request declared is still good.
 
 ```json
-{"protocol":1,"fragments":{
+{"protocol":1,"delta":{},"fragments":{
  "stats":{"version":"q3V0bG9yZW1pcHN1","made_at":1763150000123,
   "fragment":{"type":"text","props":{"text":"42 sales"}}},
  "feed":{"cached":true}}}
@@ -203,13 +203,71 @@ answer leaves out fails with reason `invalid`.
 An action names exactly one region in `regions`, plus an `action` member. Its
 answer has that region's part, next to any other regions of the same
 component the server redrew with `refresh()`, and may carry `refresh` hints
-for other components. `#[Server]` calls and uploads still answer with
-`delta` and an optional `fragments` map.
+for other components.
 
-A server may refuse a request that names too many regions with
+### State comes back on every answer
+
+Every answer sends state back in `delta`: renders, batches, server screens,
+actions, `#[Server]` calls and uploads. A plain render's delta holds only what
+changed on the server, so it is usually `{}`. An action's, a call's and an
+upload's holds everything the server half changed. A cached answer still
+carries one.
+
+The client applies the delta before it paints any fragment, the same way for
+every answer. Each prop is set only if it still holds the value the request
+sent, so an edit made while the request was out survives. A delta for a
+request that has timed out or failed is dropped with it. When the delta
+changes a prop, the regions in that answer are cached and watched for the new
+state. An empty delta, or one that only repeats what the component holds,
+costs nothing: no frame, no change to the push stream.
+
+A delta never sets a `#[LocalOnly]` prop, a `#[Computed]` value, a
+`midgard.asgard.state` key, or a `#[ServerReadOnly]` prop. Each one is ignored
+and logged under debug.
+
+### Props the server may read but not change
+
+```php
+use Native\Api\Client\Asgard\Attributes\ServerReadOnly;
+
+#[ServerReadOnly]
+public int $userId;
+```
+
+The prop goes to the server in `state` like any other. Every request that
+sends state also sends `read_only`, the keys the server may not change: these
+props and the component's `#[Computed]` values, left out when there are none.
+The server leaves them out of its delta. In debug it answers
+`500 read_only_changed` when its code changed one, which the client reports
+like any other server error.
+
+### Redrawing regions after a call
+
+A `#[Server]` method can ask the server to redraw regions once it has run:
+
+```php
+#[Server(render: true)]                    // every region this component has drawn
+#[Server(render: 'messages')]              // just this one
+#[Server(render: ['messages', 'stats'])]   // these
+```
+
+Uploads take the same argument:
+
+```php
+$this->uploadToServer('savePhoto', $this->photo, render: 'gallery');
+```
+
+The request names them in `regions` and declares any cached copies of them in
+`cache`. The answer's `fragments` holds those regions, then anything
+`refresh()` added, and they are painted after the delta like an action's
+extra regions. Without `render` the answer carries state, plus whatever
+`refresh()` asked for.
+
+A server may refuse a render that names too many regions with
 `422 too_many_regions`. The client then sends the same regions again in two
 requests of half the size each, down to one region. One region refused that
-way fails with reason `server`.
+way fails with reason `server`. A call or upload refused that way is not
+split. It fails like any other server error.
 
 ### Telling the server about the app
 

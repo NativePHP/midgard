@@ -777,3 +777,44 @@ it('patches a second list after the first, with neither answered from a stale ma
     $want = Closure::bind(fn () => $this->renderToElement()->toArray(new CallbackRegistry), $fresh, NativeComponent::class)();
     expect($plain)->toBe($want);
 });
+
+// ── State on fetch answers ──────────────────────────
+
+it('replays held patches onto a fetch answer whose delta changes nothing, on the same subscription', function () {
+    $screen = feedScreen();
+    $source = Asgard::fakeFragmentSource();
+    $roots = builtFeed($screen)['roots'];
+
+    ($this->feedPatch)(['op' => 'prepend', 'target' => 'items', 'nodes' => [feedItem(9)]], 'v0', 'v2');
+    nextFrame($screen);
+    ($this->feedPatch)(['op' => 'prepend', 'target' => 'items', 'nodes' => [feedItem(10)]], 'v2', 'v3');
+    $watching = $source->watching();
+
+    $source->respond('feed', feedTree([9, 1, 2, 3]), 'v2', delta: ['tab' => 'all']);
+
+    expect(itemsOn(nextFrame($screen)))->toBe([10, 9, 1, 2, 3])
+        ->and($source->watching())->toBe($watching)
+        ->and(ServerRegion::subscriptions()[0]['state'])->toBe(['tab' => 'all']);
+
+    // Frames after it put back the same elements: the delta costs nothing there.
+    $roots = builtFeed($screen)['roots'];
+    expect(builtFeed(nextFrame($screen))['roots'])->toBe($roots);
+});
+
+it('moves a region to the state a fetch answer\'s delta left, and patches it there', function () {
+    $screen = feedScreen();
+    $source = Asgard::fakeFragmentSource();
+    $screen->instance()->refreshServerRegions('feed');
+    nextFrame($screen);
+
+    $source->respond('feed', feedTree([1, 2]), 'v5', delta: ['tab' => 'mine']);
+    nextFrame($screen)->assertSee('Tab mine');
+
+    expect(ServerRegion::subscriptions()[0]['state'])->toBe(['tab' => 'mine']);
+
+    ($this->patch)(['op' => 'append', 'target' => 'items', 'nodes' => [feedItem(3)]], 'v5', 'v6',
+        ComponentAddress::for(PatchFeedScreen::class), ['tab' => 'mine']);
+
+    expect(itemsOn(nextFrame($screen)))->toBe([1, 2, 3]);
+    $source->assertRequested('feed', 2);
+});

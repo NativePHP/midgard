@@ -58,6 +58,9 @@ class FakeAsgardServer
     /** The delta a #[Server] call answers with. */
     public array $delta = ['roll' => 4];
 
+    /** The delta a render or action answers with. */
+    public array $renderDelta = [];
+
     /** The Asgard-Cache value to seal into each answer, or null for none. */
     public ?string $cacheHeader = null;
 
@@ -186,7 +189,7 @@ class FakeAsgardServer
         $message = match (true) {
             str_ends_with($path, '/routes') => ['protocol' => 1, 'version' => $this->routesVersion, 'routes' => $this->routes],
             str_ends_with($path, '/call'), str_ends_with($path, '/upload') => ['protocol' => 1, 'delta' => (object) $this->delta],
-            default => ['protocol' => 1, 'fragments' => $this->parts($this->requests[array_key_last($this->requests)]['body']['regions'] ?? ['r'])],
+            default => ['protocol' => 1, 'delta' => (object) $this->renderDelta, 'fragments' => $this->parts($this->requests[array_key_last($this->requests)]['body']['regions'] ?? ['r'])],
         };
 
         if ($this->tooManyRegions && str_ends_with($path, '/render')) {

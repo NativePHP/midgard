@@ -20,7 +20,7 @@ function renderBody(array $overrides = []): array
 }
 
 it('handshakes once, then signs, encrypts and verifies every render', function () {
-    expect($this->client->render(renderBody()))->toBe(['ok' => true, 'status' => 200, 'fragments' => ['stats' => ['fragment' => ['type' => 'text', 'props' => ['text' => 'hi']]]]])
+    expect($this->client->render(renderBody()))->toBe(['ok' => true, 'status' => 200, 'delta' => [], 'fragments' => ['stats' => ['fragment' => ['type' => 'text', 'props' => ['text' => 'hi']]]]])
         ->and($this->client->render(renderBody()))->toMatchArray(['ok' => true]);
 
     expect($this->server->handshakes)->toBe(1)
@@ -30,7 +30,7 @@ it('handshakes once, then signs, encrypts and verifies every render', function (
 });
 
 it('hands back a well-formed version token and drops a malformed one', function (mixed $version, ?string $expected) {
-    $this->server->plaintext = json_encode(['protocol' => 1, 'fragments' => ['stats' => ['version' => $version, 'fragment' => ['type' => 'text']]]]);
+    $this->server->plaintext = json_encode(['protocol' => 1, 'delta' => (object) [], 'fragments' => ['stats' => ['version' => $version, 'fragment' => ['type' => 'text']]]]);
 
     $result = $this->client->render(renderBody());
 
@@ -215,6 +215,7 @@ it('refuses an answer whose compression marker was flipped or stripped', functio
 it('hands back the action\'s own region next to the regions and hints its answer carries', function () {
     $this->server->plaintext = json_encode([
         'protocol' => 1,
+        'delta' => ['count' => 2],
         'fragments' => [
             'stats' => ['version' => 'v1', 'made_at' => 1763150000123, 'fragment' => ['type' => 'text']],
             'greeting' => ['version' => 'v2', 'fragment' => ['type' => 'column'], 'chrome' => []],
@@ -224,6 +225,7 @@ it('hands back the action\'s own region next to the regions and hints its answer
 
     expect($this->client->render(renderBody(['action' => ['call' => 'bump', 'args' => []]])))->toBe([
         'ok' => true, 'status' => 200,
+        'delta' => ['count' => 2],
         'fragments' => [
             'stats' => ['fragment' => ['type' => 'text'], 'version' => 'v1', 'made_at' => 1763150000123],
             'greeting' => ['fragment' => ['type' => 'column'], 'version' => 'v2', 'chrome' => []],
@@ -235,12 +237,12 @@ it('hands back the action\'s own region next to the regions and hints its answer
 it('sends several regions and hands back one part per region', function () {
     $body = renderBody(['regions' => ['stats', 'chart']]);
 
-    $this->server->plaintext = json_encode(['protocol' => 1, 'fragments' => [
+    $this->server->plaintext = json_encode(['protocol' => 1, 'delta' => (object) [], 'fragments' => [
         'stats' => ['version' => 'v1', 'fragment' => ['type' => 'text']],
         'chart' => ['version' => 'not a token!', 'fragment' => []],
     ]]);
 
-    expect($this->client->render($body))->toBe(['ok' => true, 'status' => 200, 'fragments' => [
+    expect($this->client->render($body))->toBe(['ok' => true, 'status' => 200, 'delta' => [], 'fragments' => [
         'stats' => ['fragment' => ['type' => 'text'], 'version' => 'v1'],
         'chart' => ['fragment' => []],
     ]]);
@@ -256,8 +258,10 @@ it('refuses an answer that is not a fragments map', function (string $plaintext)
 })->with([
     'the old single answer' => ['{"protocol":1,"region":"stats","fragment":{"type":"text"}}'],
     'the old cached answer' => ['{"protocol":1,"cached":true}'],
-    'a part without a fragment' => ['{"protocol":1,"fragments":{"stats":{"version":"v1"}}}'],
-    'chrome that is not an object' => ['{"protocol":1,"fragments":{"stats":{"fragment":{},"chrome":"x"}}}'],
+    'a part without a fragment' => ['{"protocol":1,"delta":{},"fragments":{"stats":{"version":"v1"}}}'],
+    'chrome that is not an object' => ['{"protocol":1,"delta":{},"fragments":{"stats":{"fragment":{},"chrome":"x"}}}'],
+    'no delta' => ['{"protocol":1,"fragments":{"stats":{"fragment":{}}}}'],
+    'a delta that is a list' => ['{"protocol":1,"delta":[1],"fragments":{"stats":{"fragment":{}}}}'],
     'a list' => ['{"protocol":1,"fragments":[{"fragment":{}}]}'],
     'an empty map' => ['{"protocol":1,"fragments":{}}'],
     'a bare fragment for a part' => ['{"protocol":1,"fragments":{"stats":{"type":"text"}}}'],

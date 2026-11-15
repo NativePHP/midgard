@@ -11,7 +11,10 @@ namespace Native\Api\Client\Asgard;
  * is the only body a render or action goes out with. Each region in it is
  * still its own RegionRequest, with its own id, timer and supersede rule.
  * The batch only groups them on the wire, sharing the component, state,
- * declared cache and reason of the first.
+ * `read_only` keys, declared cache and reason of the first.
+ *
+ * The answer carries one `delta` for the whole batch, since it is one
+ * component and one state. deliverBatch() applies it before any fragment.
  *
  * An action names exactly one region (§10.2), so a batch with an
  * ActionRequest in it holds that request alone, and its body carries the
@@ -87,6 +90,7 @@ final class RegionBatch
             'component' => $first->component,
             'regions' => $this->regions(),
             'state' => $first->state,
+            ...($first->readOnly === [] ? [] : ['read_only' => $first->readOnly]),
             ...($first->cache === [] ? [] : ['cache' => $first->cache]),
             ...($first->reason === null ? [] : ['reason' => $first->reason]),
             ...($action === null ? [] : ['action' => ['call' => $action->call, 'args' => $action->args]]),

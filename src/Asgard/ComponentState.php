@@ -3,6 +3,7 @@
 namespace Native\Api\Client\Asgard;
 
 use Native\Api\Client\Asgard\Attributes\LocalOnly;
+use Native\Api\Client\Asgard\Attributes\ServerReadOnly;
 use Native\Mobile\Attributes\Computed;
 use Native\Mobile\Edge\NativeComponent;
 use Native\Mobile\Edge\NativeRouter;
@@ -31,6 +32,11 @@ use ReflectionProperty;
  * `native*` internals a component keeps protected never leave the device,
  * and a delta can never reach them, whatever a server puts in it.
  *
+ * A prop marked #[ServerReadOnly] is sent like any other, and named in
+ * the request's `read_only` with the #[Computed] values (readOnly()). The
+ * server may read those keys but not change them, and a delta cannot set
+ * them either.
+ *
  * The app-wide keys in `midgard.asgard.state` are added to every
  * component's state (configured()). They are not props, so a delta cannot
  * set them either. A component's own prop or computed of the same name
@@ -46,6 +52,9 @@ class ComponentState
 
     /** @var array<class-string, array<string, ReflectionMethod>> */
     protected static array $computed = [];
+
+    /** @var array<class-string, array<string, true>> */
+    protected static array $serverReadOnly = [];
 
     /** What a configured key must look like: a PHP property name, as every other state key is. */
     public const KEY_PATTERN = '/^[A-Za-z_][A-Za-z0-9_]{0,99}$/D';
@@ -260,20 +269,66 @@ class ComponentState
         return isset(static::$localOnly[$class][$prop]);
     }
 
+    /** Whether a public prop of the component is #[ServerReadOnly]. */
+    public static function isServerReadOnly(object|string $component, string $prop): bool
+    {
+        $class = is_object($component) ? $component::class : $component;
+
+        if (! isset(static::$serverReadOnly[$class])) {
+            static::scan($class);
+        }
+
+        return isset(static::$serverReadOnly[$class][$prop]);
+    }
+
+    /**
+     * The `read_only` member for a request that carries this state: the keys
+     * of it that are #[ServerReadOnly] props or #[Computed] values, in state
+     * order. Only keys the state has, since the server refuses any other. A
+     * component that names its own state (a server screen) has none.
+     *
+     * @return list<string>
+     */
+    public static function readOnly(NativeComponent $component, array $state): array
+    {
+        if ($component instanceof Contracts\AddressedComponent) {
+            return [];
+        }
+
+        $class = $component::class;
+
+        if (! isset(static::$serverReadOnly[$class])) {
+            static::scan($class);
+        }
+
+        $keys = static::$serverReadOnly[$class] + static::$computed[$class];
+
+        if ($keys === []) {
+            return [];
+        }
+
+        return array_values(array_map('strval', array_keys(array_intersect_key($state, $keys))));
+    }
+
     protected static function scan(string $class): void
     {
         $properties = [];
         $localOnly = [];
+        $serverReadOnly = [];
 
         foreach ((new ReflectionClass($class))->getProperties(ReflectionProperty::IS_PUBLIC) as $prop) {
             if ($prop->isStatic()) {
                 continue;
             }
 
-            if (static::markedLocalOnly($prop)) {
+            if (static::marked($prop, LocalOnly::class)) {
                 $localOnly[$prop->getName()] = true;
             } else {
                 $properties[$prop->getName()] = $prop;
+
+                if (static::marked($prop, ServerReadOnly::class)) {
+                    $serverReadOnly[$prop->getName()] = true;
+                }
             }
         }
 
@@ -289,7 +344,7 @@ class ComponentState
                 continue;
             }
 
-            if (static::markedLocalOnly($method)) {
+            if (static::marked($method, LocalOnly::class)) {
                 $localOnly[$name] = true;
             } else {
                 $computed[$name] = $method;
@@ -299,6 +354,7 @@ class ComponentState
         static::$properties[$class] = $properties;
         static::$localOnly[$class] = $localOnly;
         static::$computed[$class] = $computed;
+        static::$serverReadOnly[$class] = $serverReadOnly;
     }
 
     /**
@@ -326,9 +382,11 @@ class ComponentState
      * Attributes are read off the declaring class, so a subclass that
      * declares the prop again (to change its default, say) would drop the
      * mark. Walking up the parents keeps it: a prop or computed method is
-     * local-only if any class that declares it says so.
+     * local-only (or server read-only) if any class that declares it says so.
+     *
+     * @param  class-string  $attribute
      */
-    protected static function markedLocalOnly(ReflectionProperty|ReflectionMethod $member): bool
+    protected static function marked(ReflectionProperty|ReflectionMethod $member, string $attribute): bool
     {
         $name = $member->getName();
         $isProp = $member instanceof ReflectionProperty;
@@ -338,7 +396,7 @@ class ComponentState
                 ? ($class->hasProperty($name) ? $class->getProperty($name) : null)
                 : ($class->hasMethod($name) ? $class->getMethod($name) : null);
 
-            if ($declared !== null && $declared->getAttributes(LocalOnly::class) !== []) {
+            if ($declared !== null && $declared->getAttributes($attribute) !== []) {
                 return true;
             }
         }

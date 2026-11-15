@@ -121,6 +121,12 @@ trait UsesServer
      * server changed are applied under compare-and-set, and any regions
      * and hints its refresh() asked for are painted and fetched.
      *
+     * Pass `render:` to have the server redraw regions after the method,
+     * as `#[Server(render: ...)]` does for a call: `true` for every server
+     * region this component declares, or a name or list of names:
+     *
+     *     $this->uploadToServer('savePhoto', $this->photo, render: 'gallery');
+     *
      * The path must be a readable regular file, not a directory and not a
      * symlink. It is read on a background lane, never on the UI thread.
      *
@@ -138,7 +144,12 @@ trait UsesServer
      */
     public function uploadToServer(string $method, string $path, mixed ...$args): ?string
     {
-        return ServerMethods::upload($this, $method, $path, $args);
+        // `render:` is a named argument, so it lands in $args under its
+        // name. Every other arg is positional on the wire.
+        $render = $args['render'] ?? false;
+        unset($args['render']);
+
+        return ServerMethods::upload($this, $method, $path, array_values($args), $render);
     }
 
     /**
