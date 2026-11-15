@@ -78,6 +78,7 @@ class AsgardServiceProvider extends ServiceProvider
                 static fn (\Closure $then) => AsyncTask::dispatch(self::handshakeWork($config))
                     ->finished(fn ($ok) => $then($ok === true))
                     ->failed(fn () => $then(false)),
+                static fn (string $component, array $state, string $region, string $from, string $version, array $patch) => ServerRegion::patch($component, $state, $region, $from, $version, $patch),
             ));
         }
 

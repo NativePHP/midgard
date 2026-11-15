@@ -271,6 +271,35 @@ each region. The server then signals every region that changed while the app
 was away, and every region the device holds no version for, so nothing pushed
 in the meantime is missed.
 
+### Patches
+
+A server can change one list in a region without sending the whole region
+again, with `Asgard::patch(...)->prepend()`, `->append()` or `->remove()`. The
+device gets a `patch` event that names the list by its node `key` and carries
+only the new nodes, or the keys to remove. `keep` trims the list after a
+prepend (from the end) or an append (from the start).
+
+Give the list a `key` (`key="items"`), and give each item one too. Remove
+works by item key, and keyed items keep their identity on screen as the list
+moves, so the renderer only adds and drops the rows that changed.
+
+The patch only applies when the device holds the version the patch was made
+from and the list is there. Anything else (a missed or out-of-order patch, a
+region not loaded yet, a cached copy on screen, an op the device cannot read)
+makes the device fetch the whole region, as a signal does. So the server must
+also change the data the region renders from. The first load, a reconnect and
+every fallback render the region in full, and that render must show the same
+list the patches built.
+
+Patched nodes are checked like any fragment's nodes, and their taps work the
+same. A patch never fires `RegionCacheInvalidation`. It drops the region's
+cached copy, and the next full answer stores a fresh one.
+
+Applying a patch is cheap: no HTTP, and only the new nodes are checked. The
+region then repaints with the screen's next frame, which sends the screen's
+whole tree to the renderer again, as any fragment does. Patches that land
+between two frames share one repaint.
+
 ### The region cache
 
 The app can keep a copy of each region and server screen it gets, and paint

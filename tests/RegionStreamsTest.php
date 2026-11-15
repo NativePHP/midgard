@@ -163,6 +163,64 @@ it('does not take a signal\'s version as held, since the region is not fetched y
     expect(($this->opened)()['body']['subscriptions'][0]['versions'])->toBe(['stats' => 'v1']);
 });
 
+it('hands a patch to the patcher, and keeps its version for a reconnect once it is applied', function () {
+    $patches = [];
+    $applied = 1;
+    $streams = new RegionStreams($this->client, fn () => 1, function (...$args) {
+        $this->signals[] = $args;
+
+        return 1;
+    }, null, function (...$args) use (&$patches, &$applied) {
+        $patches[] = $args;
+
+        return $applied;
+    });
+    $this->streams = $streams;
+    $streams->watch([sub(versions: ['stats' => 'v1'])]);
+    $op = ['op' => 'prepend', 'target' => 'items', 'nodes' => [['type' => 'text']], 'keep' => 10];
+
+    $applied = 0;
+    $streams->receive(($this->event)(['protocol' => 1, 'subscription' => 'home', 'region' => 'stats', 'from' => 'v1', 'version' => 'v2', 'patch' => $op], event: 'patch'));
+    expect($streams->subscriptions()['home']['versions'])->toBe(['stats' => 'v1']);
+
+    $applied = 1;
+    $streams->receive(($this->event)(['protocol' => 1, 'subscription' => 'home', 'region' => 'stats', 'from' => 'v1', 'version' => 'v2', 'patch' => $op], '4', event: 'patch'));
+
+    expect($patches)->toBe([
+        ['app.native.screens.home', ['name' => 'Simon'], 'stats', 'v1', 'v2', $op],
+        ['app.native.screens.home', ['name' => 'Simon'], 'stats', 'v1', 'v2', $op],
+    ])->and($this->signals)->toBe([]);
+
+    $streams->closed(new StreamClosed(ASGARD, 'timed out', reconnect: true));
+    expect(($this->opened)()['body']['subscriptions'][0]['versions'])->toBe(['stats' => 'v2']);
+});
+
+it('signals for a patch with no from or no op, or with no patcher', function (array $payload, bool $patcher) {
+    $patches = [];
+    $this->streams = new RegionStreams($this->client, fn () => 1, function (...$args) {
+        $this->signals[] = $args;
+
+        return 1;
+    }, null, $patcher ? function (...$args) use (&$patches) {
+        $patches[] = $args;
+
+        return 1;
+    } : null);
+    $this->streams->watch([sub()]);
+
+    $this->streams->receive(($this->event)(['protocol' => 1, 'subscription' => 'home', 'region' => 'stats', 'version' => 'v2', ...$payload], event: 'patch'));
+
+    expect($this->signals)->toBe([['app.native.screens.home', ['name' => 'Simon'], 'stats', 'v2']])
+        ->and($patches)->toBe([]);
+})->with([
+    'no from' => [['patch' => ['op' => 'remove', 'target' => 'items', 'keys' => []]], true],
+    'an empty from' => [['from' => '', 'patch' => ['op' => 'remove', 'target' => 'items', 'keys' => []]], true],
+    'a from that is too long' => [['from' => str_repeat('v', 65), 'patch' => ['op' => 'remove', 'target' => 'items', 'keys' => []]], true],
+    'no patch' => [['from' => 'v1'], true],
+    'a patch that is a string' => [['from' => 'v1', 'patch' => 'prepend'], true],
+    'no patcher' => [['from' => 'v1', 'patch' => ['op' => 'remove', 'target' => 'items', 'keys' => []]], false],
+]);
+
 it('hands a server screen\'s chrome to the pusher with its fragment', function () {
     $this->streams->watch([sub(regions: ['screen'])]);
 
@@ -219,6 +277,7 @@ it('drops an event that does not verify, and never acts on it', function (Closur
     'another id' => [fn ($e) => new StreamMessage($e->id, 'fragment', $e->data, '4')],
     'no id' => [fn ($e) => new StreamMessage($e->id, 'fragment', $e->data, null)],
     'renamed to a signal' => [fn ($e) => new StreamMessage($e->id, 'signal', $e->data, '3')],
+    'renamed to a patch' => [fn ($e) => new StreamMessage($e->id, 'patch', $e->data, '3')],
     'body changed' => [function ($e) {
         $data = json_decode($e->data, true);
         $data['body'][30] = $data['body'][30] === 'A' ? 'B' : 'A';

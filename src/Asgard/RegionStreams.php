@@ -42,9 +42,11 @@ use Native\Api\Client\Asgard\Security\Wire;
  * before it reaches the device. One that fails is logged and dropped. A
  * `signal` goes to the signaller and a shared region's `fragment` to the
  * pusher (ServerRegion::signal() and ServerRegion::push() in an app), with
- * the subscription's address and state. Those only touch instances that
- * asked with that state, so a server cannot use the stream to paint
- * elsewhere.
+ * the subscription's address and state. A `patch` goes to the patcher
+ * (ServerRegion::patch()) with its `from` version and op. One with no
+ * patcher, no `from` or no op goes to the signaller, so the region is
+ * fetched whole instead. All of these only touch instances that asked
+ * with that state, so a server cannot use the stream to paint elsewhere.
  */
 class RegionStreams
 {
@@ -72,12 +74,14 @@ class RegionStreams
      * @param  Closure(string $component, array $state, string $region, string $version): int  $signaller
      * @param  (Closure(Closure(bool): void): void)|null  $refresh  Gets a new session off the UI lane, then calls back.
      *                                                              Without one, the handshake runs inline (tests).
+     * @param  (Closure(string $component, array $state, string $region, string $from, string $version, array $patch): int)|null  $patcher  Applies a patch, and returns how many instances took it.
      */
     public function __construct(
         protected AsgardClient $client,
         protected Closure $pusher,
         protected Closure $signaller,
         protected ?Closure $refresh = null,
+        protected ?Closure $patcher = null,
     ) {}
 
     /**
@@ -153,7 +157,7 @@ class RegionStreams
     public function receive(StreamMessage $message): void
     {
         if ($message->id !== self::ID || $this->session === null
-            || ! in_array($message->event, ['signal', 'fragment'], true)) {
+            || ! in_array($message->event, ['signal', 'fragment', 'patch'], true)) {
             return;
         }
 
@@ -187,6 +191,12 @@ class RegionStreams
             return;
         }
 
+        if ($message->event === 'patch') {
+            $this->patch($id, $subscription, $region, $version, $payload);
+
+            return;
+        }
+
         if (! is_array($payload['fragment'] ?? null)) {
             Log::warning("Asgard: ignored a fragment event for [{$subscription['component']}] [{$region}] with no fragment");
 
@@ -203,6 +213,30 @@ class RegionStreams
         $maxAge = is_int($payload['max_age'] ?? null) && $payload['max_age'] >= 0 ? $payload['max_age'] : null;
 
         ($this->pusher)($subscription['component'], $subscription['state'], $region, $payload['fragment'], is_array($chrome) ? $chrome : null, $version, $madeAt, $maxAge);
+    }
+
+    /**
+     * Hand a patch to the patcher. One it cannot take is a signal, so the
+     * region is fetched whole. A region it patched holds the new version,
+     * so a reconnect does not send it again.
+     *
+     * @param  array{id: string, component: string, regions: list<string>, state: array, versions: array<string, string>}  $subscription
+     */
+    protected function patch(string $id, array $subscription, string $region, string $version, array $payload): void
+    {
+        $from = $payload['from'] ?? null;
+        $patch = $payload['patch'] ?? null;
+
+        if ($this->patcher === null || ! is_string($from) || $from === '' || strlen($from) > 64 || ! is_array($patch)) {
+            Log::debug("Asgard: a patch for [{$subscription['component']}] [{$region}] cannot be applied here. Fetching the region instead.");
+            ($this->signaller)($subscription['component'], $subscription['state'], $region, $version);
+
+            return;
+        }
+
+        if (($this->patcher)($subscription['component'], $subscription['state'], $region, $from, $version, $patch) > 0) {
+            $this->subscriptions[$id]['versions'][$region] = $version;
+        }
     }
 
     public function opened(StreamOpened $event): void

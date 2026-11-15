@@ -84,8 +84,10 @@ use Native\Mobile\System;
  * of every frame and after the router unmounts a screen, so changes that
  * land together make one call. The stream tells a region it changed
  * through signal(), which fetches it again, or for a shared region hands
- * over the fragment itself through push(). Both name the subscription's
- * address and state.
+ * over the fragment itself through push(). A `patch` changes one list in a
+ * region the device holds through patch(), and falls back to what signal()
+ * does when it cannot apply. All three name the subscription's address and
+ * state.
  *
  * ## The region cache
  *
@@ -328,6 +330,27 @@ class ServerRegion
     protected static array $failures = [];
 
     /**
+     * What patches keep per owner and region, so the next one is cheap:
+     * `owner => [region => ['targets' => [key => path], 'uncached' => bool,
+     * 'stale' => bool]]`. A path is the child indexes from the region's
+     * node list down to the target. `uncached` says the region's cache
+     * entry is already dropped, and `stale` that its callback registry is
+     * rebuilt on its next render. A full fragment resets it.
+     *
+     * @var \WeakMap<NativeComponent, array<string, array{targets: array<string, list<int>>, uncached: bool, stale: bool}>>|null
+     */
+    protected static ?\WeakMap $patchState = null;
+
+    /** At most this many nodes in one patch. */
+    public const PATCH_MAX_NODES = 100;
+
+    /** At most this many keys in one remove. */
+    public const PATCH_MAX_KEYS = 1000;
+
+    /** The largest `keep` a patch may send. */
+    public const PATCH_MAX_KEEP = 100000;
+
+    /**
      * Open a region. Returns true when the caller should render the
      * placeholder body, false when a fragment was painted in its place.
      *
@@ -388,7 +411,10 @@ class ServerRegion
 
         // The collector's bound registry is the owner's own, so its
         // scope is what a child's region chains in front of its own.
-        $callbacks = static::registryFor($name, $owner)
+        // A patched region gets a fresh registry now, so ids of nodes a
+        // patch removed stop resolving. Until this render the old one
+        // still answers taps on what is on screen.
+        $callbacks = (static::takeStaleRegistry($name, $owner) ? null : static::registryFor($name, $owner))
             ?? static::newRegistry($name, $owner, NativeElementCollector::callbacks()?->scope() ?? '');
 
         // Element-tree path: pinning the region node is enough. toArray()
@@ -473,6 +499,7 @@ class ServerRegion
             $held[$region] = $nodes;
             static::fragments()[$owner] = $held;
             static::dropRegistry($region, $owner);
+            static::forgetPatchState($region, $owner);
 
             // A server screen's body has landed, so its timer is off. A
             // later answer that fails leaves this one on screen.
@@ -1091,6 +1118,336 @@ class ServerRegion
     }
 
     /**
+     * Change one list in a region the device already holds, from a `patch`
+     * event on the push stream (§8.1).
+     *
+     * `$patch` is the op: `prepend` or `append` with `nodes` and an optional
+     * `keep`, or `remove` with `keys`. Its `target` names a node by `key`, the
+     * first one depth first, compared as strings, and the op changes that
+     * node's children. New nodes go through the checks a fragment's nodes
+     * do, element types, media URLs and callback slots, and their taps work
+     * the same.
+     *
+     * It lands on every live instance of the address that asked for the
+     * region with that state, as push() does. An instance that already holds
+     * `$version` is left alone. One that shows a tree the server sent, holds
+     * `$from`, and has the target gets the op applied to its held tree and
+     * holds `$version`. Any other, and any op that is not well formed or
+     * whose nodes fail a check, is handled as signal() handles it: the region
+     * is fetched again whole.
+     *
+     * Applying is cheap. There is no HTTP, the new nodes are the only ones
+     * checked, and the target's path is remembered, so the next patch to it
+     * does not search the tree. The region repaints with the next frame,
+     * like any fragment that lands. A patch never fires
+     * RegionCacheInvalidation. It drops the region's cached copy, once, since
+     * that copy no longer matches what is on screen, and the next full answer
+     * stores a fresh one.
+     *
+     * Returns how many instances it patched.
+     */
+    public static function patch(string $component, array $state, string $region, string $from, string $version, mixed $patch): int
+    {
+        $patched = 0;
+        $fallback = 0;
+        $op = static::parsePatch($patch, $reason);
+
+        foreach (static::subscribers($component, $state, $region) as $owner) {
+            $held = (static::answered()[$owner] ?? [])[$region]['version'] ?? null;
+
+            if ($held === $version) {
+                continue;
+            }
+
+            $why = $op === null ? $reason : static::applyPatch($owner, $region, $held, $from, $op);
+
+            if ($why === null) {
+                static::answer($owner, $region, $state, $version);
+                static::dropCachedCopy($owner, $region, $state);
+                $patched++;
+
+                continue;
+            }
+
+            NativeRouter::debugLog("Asgard: patch for [{$component}] [{$region}] not applied ({$why}). Fetching the region instead.");
+            static::refresh($owner, $region, push: true);
+            $fallback++;
+        }
+
+        if ($patched + $fallback > 0) {
+            static::$repaint = true;
+        }
+
+        return $patched;
+    }
+
+    /**
+     * A patch op in the form applyPatch() takes, or null with `$reason`.
+     *
+     * @return array{op: string, target: string, nodes?: list<array>, keep?: ?int, keys?: array<string, true>}|null
+     */
+    protected static function parsePatch(mixed $patch, ?string &$reason = null): ?array
+    {
+        $reason = null;
+
+        if (! is_array($patch)) {
+            $reason = 'it is not an object';
+
+            return null;
+        }
+
+        $op = $patch['op'] ?? null;
+        $target = $patch['target'] ?? null;
+
+        if ((! is_string($target) && ! is_int($target)) || (string) $target === '') {
+            $reason = 'it has no target';
+
+            return null;
+        }
+
+        $target = (string) $target;
+
+        if ($op === 'remove') {
+            $keys = $patch['keys'] ?? null;
+
+            if (! is_array($keys) || ! array_is_list($keys) || count($keys) > self::PATCH_MAX_KEYS) {
+                $reason = 'its keys are not a list of at most '.self::PATCH_MAX_KEYS;
+
+                return null;
+            }
+
+            $set = [];
+            foreach ($keys as $key) {
+                if (! is_string($key) && ! is_int($key)) {
+                    $reason = 'a key is not a string';
+
+                    return null;
+                }
+
+                $set[(string) $key] = true;
+            }
+
+            return ['op' => 'remove', 'target' => $target, 'keys' => $set];
+        }
+
+        if ($op !== 'prepend' && $op !== 'append') {
+            $reason = 'it has no known op';
+
+            return null;
+        }
+
+        $nodes = $patch['nodes'] ?? null;
+
+        if (! is_array($nodes) || ! array_is_list($nodes) || count($nodes) > self::PATCH_MAX_NODES) {
+            $reason = 'its nodes are not a list of at most '.self::PATCH_MAX_NODES;
+
+            return null;
+        }
+
+        $keep = $patch['keep'] ?? null;
+
+        if ($keep !== null && (! is_int($keep) || $keep < 1 || $keep > self::PATCH_MAX_KEEP)) {
+            $reason = 'its keep is not a whole number from 1 to '.self::PATCH_MAX_KEEP;
+
+            return null;
+        }
+
+        return ['op' => $op, 'target' => $target, 'nodes' => $nodes, 'keep' => $keep];
+    }
+
+    /**
+     * Apply a parsed op to the tree an owner holds for a region. Null when it
+     * was applied, or why it was not, in which case nothing changed.
+     */
+    protected static function applyPatch(NativeComponent $owner, string $region, ?string $held, string $from, array $op): ?string
+    {
+        $all = static::fragments()[$owner] ?? [];
+        $nodes = $all[$region] ?? null;
+
+        if ($nodes === null) {
+            return 'the region has no tree';
+        }
+
+        if ($held !== $from) {
+            return 'the device holds another version';
+        }
+
+        if ((static::copies()[$owner] ?? [])[$region]['cached'] ?? false) {
+            return 'the region shows a cached copy';
+        }
+
+        foreach (static::$held as $entry) {
+            if ($entry['region'] === $region && $entry['owner']->get() === $owner) {
+                return 'a fragment is waiting to replace the region';
+            }
+        }
+
+        $state = (static::patchState()[$owner] ?? [])[$region] ?? ['targets' => [], 'uncached' => false, 'stale' => false];
+        $path = $state['targets'][$op['target']] ?? null;
+
+        if ($path === null || ! static::pathLeadsTo($nodes, $path, $op['target'])) {
+            $path = static::findTarget($nodes, $op['target']);
+        }
+
+        if ($path === null) {
+            return "no node has the key [{$op['target']}]";
+        }
+
+        $add = [];
+
+        if ($op['op'] !== 'remove') {
+            // The new nodes sit one level under the target.
+            $depth = count($path) + 1;
+            $add = array_map(fn ($node) => is_array($node) ? $node : null, $op['nodes']);
+
+            if (($problem = static::rejectionReason($add, $depth)) !== null) {
+                return "a node cannot be rendered: {$problem}";
+            }
+
+            try {
+                $add = static::checkCallbacks($add, $region, $depth);
+            } catch (\RuntimeException $e) {
+                return $e->getMessage();
+            }
+        }
+
+        // Walk down to the target by reference, so only the arrays on the
+        // path are copied, and swap its children.
+        $list = &$nodes;
+        $last = count($path) - 1;
+
+        foreach ($path as $level => $index) {
+            if ($level === $last) {
+                break;
+            }
+
+            $list = &$list[$index]['children'];
+        }
+
+        $target = &$list[$path[$last]];
+        $children = $target['children'] ?? [];
+        $keep = $op['keep'] ?? null;
+
+        $children = match ($op['op']) {
+            'prepend' => $keep !== null && count($add) + count($children) > $keep
+                ? array_slice([...$add, ...$children], 0, $keep)
+                : [...$add, ...$children],
+            'append' => $keep !== null && count($add) + count($children) > $keep
+                ? array_slice([...$children, ...$add], -$keep)
+                : [...$children, ...$add],
+            'remove' => array_values(array_filter(
+                $children,
+                fn (array $child) => ! (isset($child['key']) && (is_string($child['key']) || is_int($child['key'])) && isset($op['keys'][(string) $child['key']])),
+            )),
+        };
+
+        $target['children'] = $children;
+        unset($target, $list);
+
+        $all[$region] = $nodes;
+        static::fragments()[$owner] = $all;
+
+        // Only this target's path is still known to be right: the op may
+        // have moved any other one, or put a node with its key first.
+        $state['targets'] = [$op['target'] => $path];
+        $state['stale'] = true;
+        $patches = static::patchState()[$owner] ?? [];
+        $patches[$region] = $state;
+        static::patchState()[$owner] = $patches;
+
+        return null;
+    }
+
+    /** The child indexes down to the first node, depth first, keyed `$target`. */
+    protected static function findTarget(array $nodes, string $target): ?array
+    {
+        foreach ($nodes as $index => $node) {
+            $key = $node['key'] ?? null;
+
+            if ((is_string($key) || is_int($key)) && (string) $key === $target) {
+                return [$index];
+            }
+
+            if (! empty($node['children']) && is_array($node['children'])
+                && ($path = static::findTarget($node['children'], $target)) !== null) {
+                return [$index, ...$path];
+            }
+        }
+
+        return null;
+    }
+
+    /** Whether a remembered path still ends at a node keyed `$target`. */
+    protected static function pathLeadsTo(array $nodes, array $path, string $target): bool
+    {
+        $node = null;
+
+        foreach ($path as $index) {
+            if (! is_array($nodes[$index] ?? null)) {
+                return false;
+            }
+
+            $node = $nodes[$index];
+            $nodes = is_array($node['children'] ?? null) ? $node['children'] : [];
+        }
+
+        $key = $node['key'] ?? null;
+
+        return (is_string($key) || is_int($key)) && (string) $key === $target;
+    }
+
+    /** Drop a patched region's RegionCache entry, the first time only. */
+    protected static function dropCachedCopy(NativeComponent $owner, string $region, array $state): void
+    {
+        $patches = static::patchState()[$owner] ?? [];
+
+        if ($patches[$region]['uncached'] ?? false) {
+            return;
+        }
+
+        static::setCopy($owner, $region, null, false);
+
+        if (static::cacheTtl($owner, $region) > 0 && ! str_contains($region, '#')) {
+            RegionCache::forget(RegionCache::key(ComponentAddress::for($owner), $region, $state));
+        }
+
+        $patches[$region]['uncached'] = true;
+        static::patchState()[$owner] = $patches;
+    }
+
+    /** Whether a region's registry is to be rebuilt, clearing the flag. */
+    protected static function takeStaleRegistry(string $region, ?NativeComponent $owner): bool
+    {
+        if ($owner === null || ! ((static::patchState()[$owner] ?? [])[$region]['stale'] ?? false)) {
+            return false;
+        }
+
+        $patches = static::patchState()[$owner];
+        $patches[$region]['stale'] = false;
+        static::patchState()[$owner] = $patches;
+
+        return true;
+    }
+
+    protected static function forgetPatchState(string $region, NativeComponent $owner): void
+    {
+        $patches = static::patchState()[$owner] ?? null;
+
+        if ($patches === null || ! isset($patches[$region])) {
+            return;
+        }
+
+        unset($patches[$region]);
+        static::patchState()[$owner] = $patches;
+    }
+
+    /** @return \WeakMap<NativeComponent, array<string, array{targets: array<string, list<int>>, uncached: bool, stale: bool}>> */
+    protected static function patchState(): \WeakMap
+    {
+        return static::$patchState ??= new \WeakMap;
+    }
+
+    /**
      * The server named a component, and maybe one of its regions, as worth
      * drawing again (a `refresh` hint from refresh() on the server, §10.2).
      * It is handled like a stream signal without a version: every live
@@ -1532,6 +1889,7 @@ class ServerRegion
         unset($held[$region]);
         static::fragments()[$owner] = $held;
         static::dropRegistry($region, $owner);
+        static::forgetPatchState($region, $owner);
     }
 
     public static function hasFragment(string $region, ?NativeComponent $owner = null): bool
@@ -1718,6 +2076,7 @@ class ServerRegion
             static::awaiting()[$owner],
             static::cacheTtls()[$owner],
             static::copies()[$owner],
+            static::patchState()[$owner],
         );
 
         static::$held = array_values(array_filter(
@@ -1824,6 +2183,7 @@ class ServerRegion
         static::$copies = null;
         static::$held = [];
         static::$retries = [];
+        static::$patchState = null;
     }
 
     /**
