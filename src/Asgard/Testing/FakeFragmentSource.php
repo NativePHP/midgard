@@ -34,9 +34,11 @@ use PHPUnit\Framework\Assert;
  *     $source->assertActionSent('sales-summary', 'shuffle');
  *     $source->respondToAction('sales-summary', ['type' => 'text', 'props' => ['text' => 'Shuffled']]);
  *
- * Several regions of one component asked for together arrive as a batch.
- * Each region in it is recorded as a request too, so assertRequested() and
- * respond() work the same. respondToBatch() answers the whole batch:
+ * Every render request arrives as a batch, of one region or several of one
+ * component asked for together. Each region in it is recorded as a request
+ * too, so assertRequested() and respond() work per region.
+ * respondToBatch() answers the whole request with a `fragments` map, as a
+ * server does:
  *
  *     $source->assertBatched(['sales-summary', 'chart']);
  *     $source->respondToBatch(fragments: ['sales-summary' => ['fragment' => [...]]]);
@@ -102,23 +104,18 @@ class FakeFragmentSource implements FragmentSource
         return $bound instanceof static ? $bound : null;
     }
 
-    public function request(RegionRequest $request): void
-    {
-        $this->requests[] = $request;
-    }
-
-    public function action(ActionRequest $request): void
-    {
-        $this->actions[] = $request;
-    }
-
-    public function batch(RegionBatch $batch): void
+    public function request(RegionBatch $batch): void
     {
         $this->batches[] = $batch;
 
         foreach ($batch->requests as $request) {
             $this->requests[] = $request;
         }
+    }
+
+    public function action(ActionRequest $request): void
+    {
+        $this->actions[] = $request;
     }
 
     public function watch(array $subscriptions): void
@@ -174,7 +171,7 @@ class FakeFragmentSource implements FragmentSource
         return $this->batches === [] ? null : $this->batches[array_key_last($this->batches)];
     }
 
-    /** Assert one batch asked for exactly these regions, in this order, and how many times. */
+    /** Assert one request asked for exactly these regions, in this order, and how many times. */
     public function assertBatched(array $regions, ?int $times = null): static
     {
         $count = count(array_filter($this->batches, fn (RegionBatch $b) => $b->regions() === array_values($regions)));
@@ -310,6 +307,8 @@ class FakeFragmentSource implements FragmentSource
     /**
      * Answer a server action: the ActionRequest itself, or a region name
      * for the latest action sent from it. Same rules as respond().
+     * `$tree` is the action's own region, null for `{"cached": true}`, and
+     * `$fragments` the other parts of the answer's `fragments` map.
      */
     public function respondToAction(ActionRequest|string $action, array|string|null $tree, array $fragments = [], array $refresh = [], ?int $madeAt = null, ?int $maxAge = null, bool $invalidate = false): bool
     {
@@ -321,15 +320,18 @@ class FakeFragmentSource implements FragmentSource
         }
 
         // A null tree is the server's `{"cached": true}` for the action's own region.
-        if ($tree === null) {
-            return ServerRegion::deliverCached($action, $fragments, $refresh, $invalidate);
-        }
+        $own = $tree === null ? ['cached' => true] : [
+            'fragment' => $tree,
+            ...($madeAt === null ? [] : ['made_at' => $madeAt]),
+            ...($maxAge === null ? [] : ['max_age' => $maxAge]),
+        ];
 
-        return ServerRegion::deliver($action, $tree, null, null, $fragments, $refresh, $madeAt, $maxAge, $invalidate);
+        // The answer a server sends: the action's own part next to the rest.
+        return ServerRegion::deliverBatch(new RegionBatch([$action]), [$action->region => $own] + $fragments, $invalidate, $refresh) === 1;
     }
 
     /**
-     * Answer a batch, the last one sent when none is given, with
+     * Answer a render request, the last one sent when none is given, with
      * `{region: {fragment, version?, chrome?}}`. Returns how many regions
      * were painted. A region left out fails as the device would fail it.
      */
@@ -342,7 +344,7 @@ class FakeFragmentSource implements FragmentSource
         return ServerRegion::deliverBatch($batch, $fragments, $invalidate);
     }
 
-    /** Report a whole batch as failed, the last one sent when none is given. */
+    /** Report a whole render request as failed, the last one sent when none is given. */
     public function failBatch(?RegionBatch $batch = null, string $reason = ServerRegion::NETWORK, ?int $status = null, ?string $message = null): int
     {
         $batch ??= $this->lastBatch();

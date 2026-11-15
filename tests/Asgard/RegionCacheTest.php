@@ -559,20 +559,20 @@ it('sends reason push for a covered screen redrawn after a signal', function () 
 it('reads made_at, max_age, cached answers and a signed invalidate header', function () {
     $server = new FakeAsgardServer;
     $client = AsgardClient::make(['base' => 'https://asgard.test/_asgard', 'key' => 'test-key', 'timeout' => 5, 'store' => null], $server->client());
-    $body = ['protocol' => 1, 'component' => 'app.home', 'region' => 'stats', 'state' => [], 'cache' => ['stats' => ['made_at' => MADE_AT, 'ttl' => 60]]];
+    $body = ['protocol' => 1, 'component' => 'app.home', 'regions' => ['stats'], 'state' => [], 'cache' => ['stats' => ['made_at' => MADE_AT, 'ttl' => 60]]];
 
-    $server->plaintext = json_encode(['protocol' => 1, 'fragment' => statsText('x'), 'made_at' => MADE_AT, 'max_age' => 60]);
-    expect($client->render($body))->toBe(['ok' => true, 'status' => 200, 'fragment' => statsText('x'), 'made_at' => MADE_AT, 'max_age' => 60])
+    $server->plaintext = json_encode(['protocol' => 1, 'fragments' => ['stats' => ['fragment' => statsText('x'), 'made_at' => MADE_AT, 'max_age' => 60]]]);
+    expect($client->render($body))->toBe(['ok' => true, 'status' => 200, 'fragments' => ['stats' => ['fragment' => statsText('x'), 'made_at' => MADE_AT, 'max_age' => 60]]])
         ->and($server->requests[0]['body']['cache'])->toBe(['stats' => ['made_at' => MADE_AT, 'ttl' => 60]]);
 
-    $server->plaintext = json_encode(['protocol' => 1, 'cached' => true]);
-    expect($client->render($body))->toBe(['ok' => true, 'status' => 200, 'cached' => true]);
+    $server->plaintext = json_encode(['protocol' => 1, 'fragments' => ['stats' => ['cached' => true]]]);
+    expect($client->render($body))->toBe(['ok' => true, 'status' => 200, 'fragments' => ['stats' => ['cached' => true]]]);
 
     $server->plaintext = json_encode(['protocol' => 1, 'fragments' => ['stats' => ['cached' => true], 'news' => ['fragment' => statsText('n'), 'made_at' => 5]]]);
-    expect($client->render([...$body, 'regions' => ['stats', 'news']])['fragments'])
+    expect($client->render(['regions' => ['stats', 'news']] + $body)['fragments'])
         ->toBe(['stats' => ['cached' => true], 'news' => ['fragment' => statsText('n'), 'made_at' => 5]]);
 
-    $server->plaintext = json_encode(['protocol' => 1, 'fragment' => statsText('x'), 'made_at' => MADE_AT]);
+    $server->plaintext = json_encode(['protocol' => 1, 'fragments' => ['stats' => ['fragment' => statsText('x'), 'made_at' => MADE_AT]]]);
     $server->cacheHeader = 'invalidate';
     expect($client->render($body)['invalidate'] ?? null)->toBeTrue();
 
@@ -585,7 +585,7 @@ it('refuses an Asgard-Cache header the signature does not cover', function () {
     $client = AsgardClient::make(['base' => 'https://asgard.test/_asgard', 'key' => 'test-key', 'timeout' => 5, 'store' => null], $server->client());
     $server->tamper = fn (array $sealed) => ['headers' => $sealed['headers'] + ['asgard-cache' => 'invalidate'], 'body' => $sealed['body']];
 
-    $result = $client->render(['protocol' => 1, 'component' => 'app.home', 'region' => 'stats', 'state' => []]);
+    $result = $client->render(['protocol' => 1, 'component' => 'app.home', 'regions' => ['stats'], 'state' => []]);
 
     expect($result['ok'])->toBeFalse()
         ->and($result['error'])->toContain('response failed verification');
@@ -601,7 +601,7 @@ it('refuses a signature that covers asgard-cache when the header was stripped', 
         return $sealed;
     };
 
-    expect($client->render(['protocol' => 1, 'component' => 'app.home', 'region' => 'stats', 'state' => []])['ok'])->toBeFalse();
+    expect($client->render(['protocol' => 1, 'component' => 'app.home', 'regions' => ['stats'], 'state' => []])['ok'])->toBeFalse();
 });
 
 it('takes a forced call answer with no fragments quietly', function () {

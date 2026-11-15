@@ -8,10 +8,14 @@ namespace Native\Api\Client\Asgard;
  *
  * It is a RegionRequest for the same region, carrying the state the
  * component had when the tap landed, plus the callback's `call` and
- * `args`. The server runs the action and answers with the region's new
- * fragment, which goes back through ServerRegion::deliver() like any
- * other answer. Sending one supersedes a region request still in
- * flight, so an older render cannot land on top of the action's.
+ * `args`. On the wire it is a render request that names this one region,
+ * the action's own region, in `regions`, plus an `action` member
+ * (RegionBatch builds the body). The server runs the action and answers
+ * with a `fragments` map: the action's own region, and any other regions
+ * of the component it redrew. That goes back through
+ * ServerRegion::deliverBatch() like any other answer. Sending one
+ * supersedes a region request still in flight, so an older render cannot
+ * land on top of the action's.
  *
  * `call` and `args` are what the fragment's callback slot said, with
  * the control's value (a text field's text, a toggle's state) appended
@@ -30,17 +34,5 @@ class ActionRequest extends RegionRequest
         array $cache = [],
     ) {
         parent::__construct($id, $component, $region, $state, $componentClass, $cache);
-    }
-
-    /** The render body, plus the action to run before rendering. */
-    public function toArray(): array
-    {
-        return [
-            ...parent::toArray(),
-            'action' => [
-                'call' => $this->call,
-                'args' => $this->args,
-            ],
-        ];
     }
 }

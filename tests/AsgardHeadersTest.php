@@ -4,6 +4,7 @@ use Native\Api\Client\Asgard\AsgardClient;
 use Native\Api\Client\Asgard\HttpFragmentSource;
 use Native\Api\Client\Asgard\HttpServerTransport;
 use Native\Api\Client\Asgard\HttpUploadTransport;
+use Native\Api\Client\Asgard\RegionBatch;
 use Native\Api\Client\Asgard\RegionRequest;
 use Native\Api\Client\Asgard\RegionStreams;
 use Native\Api\Client\Asgard\ServerRegion;
@@ -32,7 +33,7 @@ afterEach(fn () => Stream::unfake());
 it('sends the headers on the handshake and on a render, and the request still verifies', function () {
     $client = AsgardClient::make($this->config, $this->server->client());
 
-    $result = $client->render(['protocol' => 1, 'component' => 'promos.show', 'region' => 'screen', 'state' => []]);
+    $result = $client->render(['protocol' => 1, 'component' => 'promos.show', 'regions' => ['screen'], 'state' => []]);
 
     expect($result['ok'])->toBeTrue()
         ->and($this->server->handshakes)->toBe(1)
@@ -42,9 +43,9 @@ it('sends the headers on the handshake and on a render, and the request still ve
 it('reads the config at each request when it was not handed resolved headers', function () {
     $client = AsgardClient::make($this->config, $this->server->client());
 
-    $client->render(['protocol' => 1, 'component' => 'promos.show', 'region' => 'screen', 'state' => []]);
+    $client->render(['protocol' => 1, 'component' => 'promos.show', 'regions' => ['screen'], 'state' => []]);
     $this->version = '1.5.0';
-    $client->render(['protocol' => 1, 'component' => 'promos.show', 'region' => 'screen', 'state' => []]);
+    $client->render(['protocol' => 1, 'component' => 'promos.show', 'regions' => ['screen'], 'state' => []]);
 
     expect(end($this->server->headers)['x-app-version'])->toBe('1.5.0');
 });
@@ -64,7 +65,7 @@ it('hands the lane the headers as they are when the request is built', function 
     $call = taskPayload(lastTaskId());
 
     $this->version = '2.0.0';
-    (new HttpFragmentSource($this->config))->request(new RegionRequest('region-1', 'app.home', 'stats', []));
+    (new HttpFragmentSource($this->config))->request(new RegionBatch([new RegionRequest('region-1', 'app.home', 'stats', [])]));
     $render = taskPayload(lastTaskId());
 
     $file = tempnam(sys_get_temp_dir(), 'midgard-headers-');

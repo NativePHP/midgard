@@ -4,7 +4,6 @@ namespace Native\Api\Client\Asgard\Contracts;
 
 use Native\Api\Client\Asgard\ActionRequest;
 use Native\Api\Client\Asgard\RegionBatch;
-use Native\Api\Client\Asgard\RegionRequest;
 
 /**
  * Where a region's fragment comes from (Asgard protocol §3, §8).
@@ -13,15 +12,23 @@ use Native\Api\Client\Asgard\RegionRequest;
  * when a component calls refreshServerRegions() (from UsesServer).
  * request() is fire and forget: it must return quickly, because it runs
  * on the UI thread at the end of a frame. An implementation does its
- * work elsewhere (an AsyncTask, typically) and delivers later with
- * `ServerRegion::deliver($request, $tree)`, from an AsyncTask
- * `->finished()` callback or anywhere else on the UI thread. Do not call
- * `$this->receiveFragment()` there: it comes from the UsesServer trait,
- * and the screen the callback is bound to may not use it.
+ * work elsewhere (an AsyncTask, typically) and delivers later, from an
+ * AsyncTask `->finished()` callback or anywhere else on the UI thread.
+ * Do not call `$this->receiveFragment()` there: it comes from the
+ * UsesServer trait, and the screen the callback is bound to may not use
+ * it.
  *
- * A request that fails without an answer the client can use is reported
- * with `ServerRegion::failed($request, $reason, $status)`, where the
- * reason is ServerRegion::NETWORK, SERVER or INVALID. A region keeps its
+ * request() gets a RegionBatch: the regions of one component instance
+ * asked for at the same moment, one or more, sharing one state. It is one
+ * request on the wire, with `regions` as a list even for one region. The
+ * answer is a `fragments` map, which goes to
+ * `ServerRegion::deliverBatch($batch, $fragments)`. Each region in it is
+ * still its own RegionRequest, with its own timer and failure, and a
+ * region the map left out fails with reason `invalid`.
+ *
+ * A request that fails as a whole is
+ * `ServerRegion::failedBatch($batch, $reason, $status)`, where the reason
+ * is ServerRegion::NETWORK, SERVER or INVALID. A region keeps its
  * placeholder, or the last fragment it painted, which is the intended
  * offline state rather than an error. A server screen still waiting for
  * its body gives up and leaves, and an action fires ServerActionFailed.
@@ -29,24 +36,11 @@ use Native\Api\Client\Asgard\RegionRequest;
  * fail when their timeout passes.
  *
  * action() is a tap inside a fragment whose callback targets the server
- * (§10). It is fire and forget in the same way: send it, and deliver the
- * fragment the server answers with through the same
- * `ServerRegion::deliver($request, $tree)`. An ActionRequest is a
- * RegionRequest, so the answer path is the same one.
- *
- * batch() is several regions of one component instance at once: the
- * first frame of a screen with several regions, a refreshServerRegions()
- * of all of them, or several hints and signals landing together. Send one
- * request with `regions`, and answer with
- * `ServerRegion::deliverBatch($batch, $fragments)`, where `$fragments` is
- * the answer's `{region: {fragment, version?, chrome?}}`. A batch that
- * fails as a whole is `ServerRegion::failedBatch($batch, $reason, $status)`.
- * Each region in it still has its own request, timer and failure.
- *
- * An action's answer can carry other regions of the same component and
- * refresh hints for other components. Hand them to deliver() with the
- * action's fragment: `deliver($request, $tree, $chrome, $version,
- * $fragments, $refresh)`.
+ * (§10). It is fire and forget in the same way. It goes out as a
+ * RegionBatch of the one ActionRequest, whose body carries `action`, and
+ * its answer goes to the same deliverBatch(), with the answer's `refresh`
+ * hints: `deliverBatch($batch, $fragments, refresh: $refresh)`. Parts for
+ * regions other than the action's own are painted as inline refreshes.
  *
  * watch() is the push stream (§8.1). It gets the whole set of
  * subscriptions the device wants, every time the set changes: an empty
@@ -59,11 +53,9 @@ use Native\Api\Client\Asgard\RegionRequest;
  */
 interface FragmentSource
 {
-    public function request(RegionRequest $request): void;
+    public function request(RegionBatch $batch): void;
 
     public function action(ActionRequest $request): void;
-
-    public function batch(RegionBatch $batch): void;
 
     /**
      * @param  list<array{id: string, component: string, regions: list<string>, state: array, versions: array<string, string>}>  $subscriptions

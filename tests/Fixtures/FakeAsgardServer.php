@@ -61,6 +61,9 @@ class FakeAsgardServer
     /** The Asgard-Cache value to seal into each answer, or null for none. */
     public ?string $cacheHeader = null;
 
+    /** Refuse every render with a signed 422 too_many_regions while set. */
+    public bool $tooManyRegions = false;
+
     /** Answer with exactly this plaintext instead of a fragment message. */
     public ?string $plaintext = null;
 
@@ -183,8 +186,14 @@ class FakeAsgardServer
         $message = match (true) {
             str_ends_with($path, '/routes') => ['protocol' => 1, 'version' => $this->routesVersion, 'routes' => $this->routes],
             str_ends_with($path, '/call'), str_ends_with($path, '/upload') => ['protocol' => 1, 'delta' => (object) $this->delta],
-            default => ['protocol' => 1, 'region' => 'r', 'fragment' => $this->fragment] + ($this->chrome !== null ? ['chrome' => $this->chrome] : []),
+            default => ['protocol' => 1, 'fragments' => $this->parts($this->requests[array_key_last($this->requests)]['body']['regions'] ?? ['r'])],
         };
+
+        if ($this->tooManyRegions && str_ends_with($path, '/render')) {
+            $sealed = Wire::sealResponse($this->sessions[$session], $session, 422, '{"error":"too_many_regions"}', $opened['signature'], null, null);
+
+            return new Response(422, $sealed['headers'], $sealed['body']);
+        }
 
         $plaintext = $this->plaintext ?? json_encode($message);
         $sealed = Wire::sealResponse($this->sessions[$session], $session, 200, $plaintext, $opened['signature'], null, null, $this->compress, $this->cacheHeader);
@@ -194,6 +203,14 @@ class FakeAsgardServer
         }
 
         return new Response(200, $sealed['headers'], $sealed['body']);
+    }
+
+    /** One part per region the request named, each the fragment and any chrome. */
+    protected function parts(array $regions): array
+    {
+        $part = ['fragment' => $this->fragment] + ($this->chrome !== null ? ['chrome' => $this->chrome] : []);
+
+        return array_fill_keys(array_map('strval', $regions), $part);
     }
 
     protected function handshake(array $body): Response

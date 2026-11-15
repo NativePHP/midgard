@@ -55,17 +55,18 @@ use Native\Mobile\System;
  * component's dispatch resolves a fragment id through registriesOf():
  * a `client` target runs a `#[NativeAction]` method on the component
  * that owns the region, and a `server` target goes out through action()
- * as an ActionRequest, whose answer comes back through deliver().
+ * as an ActionRequest, whose answer comes back through deliverBatch().
  *
  * ## Asking for fragments
  *
  * After a frame in which a region painted its placeholder, the component
  * that rendered it asks the bound `FragmentSource` for one, once per
- * component instance (requestMissing()). refresh() asks again. The
- * source answers later through deliver(), which hands the fragment to
- * the right component and flags a repaint. An instance that wants several
- * regions after one frame asks for them in one RegionBatch, and each
- * region in it is still tracked on its own.
+ * component instance (requestMissing()). refresh() asks again. Every
+ * request is a RegionBatch: an instance that wants several regions after
+ * one frame asks for them in one, and each region in it is still tracked
+ * on its own. The source answers later through deliverBatch(), which
+ * hands each part to the right component through deliver() and flags a
+ * repaint.
  *
  * refresh() only marks an instance and a region, so many marks before the
  * next frame make one fetch. Stream signals (signal()) and refresh hints
@@ -257,6 +258,7 @@ class ServerRegion
     /** At most this many subscriptions, and regions per subscription, on the stream. */
     public const MAX_SUBSCRIPTIONS = 16;
 
+    /** At most this many regions in one render request, and hints read from one answer. */
     public const MAX_REGIONS = 16;
 
     /** The `reason` of a fetch a push stream signal caused. */
@@ -485,7 +487,8 @@ class ServerRegion
     }
 
     /**
-     * Deliver the answer to a request: the seam a FragmentSource calls.
+     * Deliver one region's part of an answer. deliverBatch() calls it for
+     * each part, and a test can call it directly.
      *
      * The fragment goes to the component that rendered the region, which
      * is not necessarily the one an AsyncTask `->finished()` callback is
@@ -1251,9 +1254,10 @@ class ServerRegion
     }
 
     /**
-     * Answer a batch (§3.1): each region's part goes through deliver() as
-     * if it had been asked for alone. A region the answer left out fails
-     * with reason `invalid`. Returns how many regions were painted.
+     * Answer a render request (§3.1): the seam a FragmentSource calls with
+     * the answer's `fragments` map. Each region's part goes through
+     * deliver() as if it had been asked for alone. A region the answer left
+     * out fails with reason `invalid`. Returns how many regions were painted.
      *
      * In debug, a fragment that cannot be rendered still throws as
      * deliver() does, once every region has been handled.
@@ -1261,38 +1265,30 @@ class ServerRegion
      * A part may be `{cached: true}`, which goes through deliverCached().
      * `$invalidate` is the response's `Asgard-Cache: invalidate`.
      *
-     * @param  array<string, mixed>  $fragments  `{region: {fragment, version?, chrome?, made_at?, max_age?}}`
+     * For an action, the part named after its own region is the action's
+     * answer. Any other parts are regions of the same component the action
+     * redrew, painted as paintInline() says, and `$refresh` holds hints for
+     * other components, handled as hints() says. Both are applied whatever
+     * became of the action's own part. A plain render's answer carries
+     * neither, and parts it was not asked for are ignored.
+     *
+     * @param  array<string, mixed>  $fragments  `{region: {fragment, version?, chrome?, made_at?, max_age?} | {cached: true}}`
+     * @param  list<array{component: string, region?: string}>  $refresh
      */
-    public static function deliverBatch(RegionBatch $batch, array $fragments, bool $invalidate = false): int
+    public static function deliverBatch(RegionBatch $batch, array $fragments, bool $invalidate = false, array $refresh = []): int
     {
+        $action = $batch->action();
+
+        if ($action !== null) {
+            return static::deliverAction($action, $fragments, $refresh, $invalidate);
+        }
+
         $painted = 0;
         $thrown = null;
 
         foreach ($batch->requests as $request) {
-            $part = $fragments[$request->region] ?? null;
-
-            if (is_array($part) && ! array_key_exists('fragment', $part) && ($part['cached'] ?? null) === true) {
-                $painted += static::deliverCached($request) ? 1 : 0;
-
-                continue;
-            }
-
-            if (! is_array($part) || ! array_key_exists('fragment', $part) || ! (is_array($part['fragment']) || is_string($part['fragment']))) {
-                static::failed($request, self::INVALID, null, 'the answer has no fragment for this region');
-
-                continue;
-            }
-
             try {
-                $painted += static::deliver(
-                    $request,
-                    $part['fragment'],
-                    is_array($part['chrome'] ?? null) ? $part['chrome'] : null,
-                    is_string($part['version'] ?? null) ? $part['version'] : null,
-                    madeAt: is_int($part['made_at'] ?? null) ? $part['made_at'] : null,
-                    maxAge: is_int($part['max_age'] ?? null) ? $part['max_age'] : null,
-                    invalidate: $invalidate,
-                ) ? 1 : 0;
+                $painted += static::deliverPart($request, $fragments[$request->region] ?? null, [], [], $invalidate) ? 1 : 0;
             } catch (\RuntimeException $e) {
                 $thrown ??= $e;
             }
@@ -1305,8 +1301,77 @@ class ServerRegion
         return $painted;
     }
 
+    /** An action's answer: its own part, then the rest. Returns 1 when its own region painted. */
+    protected static function deliverAction(ActionRequest $action, array $fragments, array $refresh, bool $invalidate): int
+    {
+        $others = $fragments;
+        unset($others[$action->region]);
+        $part = $fragments[$action->region] ?? null;
+
+        if (static::isPart($part)) {
+            return static::deliverPart($action, $part, $others, $refresh, $invalidate) ? 1 : 0;
+        }
+
+        // The action's own region is missing. It fails, and the rest of the
+        // answer still lands on the instance that sent it.
+        $owner = (static::$pending[$action->id] ?? null)['owner'] ?? null;
+        $owner = $owner?->get();
+
+        static::failed($action, self::INVALID, null, 'the answer has no fragment for this region');
+
+        if ($owner !== null && $others !== []) {
+            static::paintInline($owner, $action->id, $others, $action->state, $invalidate);
+        }
+
+        if ($refresh !== []) {
+            static::hints($refresh);
+        }
+
+        return 0;
+    }
+
+    /** Whether a part is a fragment or `{cached: true}`. */
+    protected static function isPart(mixed $part): bool
+    {
+        if (! is_array($part)) {
+            return false;
+        }
+
+        if (! array_key_exists('fragment', $part)) {
+            return ($part['cached'] ?? null) === true;
+        }
+
+        return is_array($part['fragment']) || is_string($part['fragment']);
+    }
+
+    /** Deliver one region's part, or fail the region when the part is missing or not one. */
+    protected static function deliverPart(RegionRequest $request, mixed $part, array $others, array $refresh, bool $invalidate): bool
+    {
+        if (! static::isPart($part)) {
+            static::failed($request, self::INVALID, null, 'the answer has no fragment for this region');
+
+            return false;
+        }
+
+        if (! array_key_exists('fragment', $part)) {
+            return static::deliverCached($request, $others, $refresh, $invalidate);
+        }
+
+        return static::deliver(
+            $request,
+            $part['fragment'],
+            is_array($part['chrome'] ?? null) ? $part['chrome'] : null,
+            is_string($part['version'] ?? null) ? $part['version'] : null,
+            $others,
+            $refresh,
+            is_int($part['made_at'] ?? null) ? $part['made_at'] : null,
+            is_int($part['max_age'] ?? null) ? $part['max_age'] : null,
+            $invalidate,
+        );
+    }
+
     /**
-     * A batch failed as a whole: each region in it fails as failed() says,
+     * A render request failed as a whole: each region in it fails as failed() says,
      * with its own event. Returns how many were acted on.
      */
     public static function failedBatch(RegionBatch $batch, string $reason, ?int $status = null, ?string $message = null): int
@@ -1948,7 +2013,7 @@ class ServerRegion
         static::requestedStates()[$owner] = $states;
 
         try {
-            app(FragmentSource::class)->request($request);
+            app(FragmentSource::class)->request(new RegionBatch([$request]));
         } catch (\Throwable $e) {
             static::failed($request, self::NETWORK, null, $e->getMessage());
         }
@@ -2202,10 +2267,9 @@ class ServerRegion
     }
 
     /**
-     * Ask for regions of a component, and remember each one. A single
-     * region goes out as a RegionRequest. Several go out as one RegionBatch
-     * per 16 regions, sharing one copy of the state, and each region in it
-     * is still tracked on its own. Each waits at most regionTimeout()
+     * Ask for regions of a component, and remember each one. They go out as
+     * one RegionBatch per 16 regions, sharing one copy of the state, and
+     * each region in it is still tracked on its own. Each waits at most regionTimeout()
      * of the component for its answer. A server screen's body waits on
      * the screen's own timer instead.
      *
@@ -2241,11 +2305,7 @@ class ServerRegion
 
         foreach (array_chunk($requests, self::MAX_REGIONS) as $chunk) {
             try {
-                if (count($chunk) === 1) {
-                    app(FragmentSource::class)->request($chunk[0]);
-                } else {
-                    app(FragmentSource::class)->batch(new RegionBatch($chunk));
-                }
+                app(FragmentSource::class)->request(new RegionBatch($chunk));
             } catch (\Throwable $e) {
                 foreach ($chunk as $request) {
                     NativeRouter::debugLog("Asgard: request for region [{$request->region}] could not start: ".$e->getMessage());

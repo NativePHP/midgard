@@ -190,7 +190,7 @@ it('sends exactly one ActionRequest for a server target and runs nothing here', 
     expect($action)->toBeInstanceOf(ActionRequest::class);
     expect($action->toArray())->toBe([
         'component' => ComponentAddress::for($screen->instance()),
-        'region' => 'picks',
+        'regions' => ['picks'],
         'state' => ['range' => '30d', 'withChild' => false, 'ran' => [], 'actions' => [], 'platform' => 'unknown'],
         'action' => ['call' => 'shuffle', 'args' => [3, 'x']],
     ]);

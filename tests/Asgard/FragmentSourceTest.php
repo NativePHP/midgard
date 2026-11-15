@@ -6,7 +6,6 @@ use Native\Api\Client\Asgard\ComponentAddress;
 use Native\Api\Client\Asgard\Contracts\FragmentSource;
 use Native\Api\Client\Asgard\NullFragmentSource;
 use Native\Api\Client\Asgard\RegionBatch;
-use Native\Api\Client\Asgard\RegionRequest;
 use Native\Api\Client\Asgard\ServerRegion;
 use Native\Api\Client\Asgard\Testing\Asgard;
 use Native\Api\Client\Tests\Asgard\Fixtures\FragmentSourceChild;
@@ -131,11 +130,9 @@ it('drops an answer that lands after the component unmounted', function () {
 it('keeps a source the app bound before this provider registered', function () {
     $mine = new class implements FragmentSource
     {
-        public function request(RegionRequest $request): void {}
+        public function request(RegionBatch $batch): void {}
 
         public function action(ActionRequest $request): void {}
-
-        public function batch(RegionBatch $batch): void {}
 
         public function watch(array $subscriptions): void {}
     };
@@ -165,14 +162,12 @@ it('binds a source that asks nobody by default, so the placeholder stays', funct
 it('keeps the screen up when the source throws', function () {
     app()->instance(FragmentSource::class, new class implements FragmentSource
     {
-        public function request(RegionRequest $request): void
+        public function request(RegionBatch $batch): void
         {
             throw new RuntimeException('offline');
         }
 
         public function action(ActionRequest $request): void {}
-
-        public function batch(RegionBatch $batch): void {}
 
         public function watch(array $subscriptions): void {}
     });
@@ -209,7 +204,7 @@ it('carries the component address, region and JSON-safe state, with the platform
     // The wire body has no class name and no local id.
     expect($request->toArray())->toBe([
         'component' => 'native.api.client.tests.asgard.fixtures.fragment_source_screen',
-        'region' => 'sales-summary',
+        'regions' => ['sales-summary'],
         'state' => $request->state,
     ]);
     expect(json_encode($request->toArray(), JSON_THROW_ON_ERROR))->toBeString();
@@ -245,8 +240,9 @@ it('repaints when the fragment arrives through an AsyncTask completion', functio
     {
         public array $tasks = [];
 
-        public function request(RegionRequest $request): void
+        public function request(RegionBatch $batch): void
         {
+            $request = $batch->requests[0];
             $id = 'task-'.count($this->tasks);
             $this->tasks[] = $id;
 
@@ -257,8 +253,6 @@ it('repaints when the fragment arrives through an AsyncTask completion', functio
         }
 
         public function action(ActionRequest $request): void {}
-
-        public function batch(RegionBatch $batch): void {}
 
         public function watch(array $subscriptions): void {}
     });
@@ -276,15 +270,13 @@ it('repaints when the fragment arrives through an AsyncTask completion', functio
 it('flags a repaint for a fragment that lands outside an event, until the next frame', function () {
     app()->instance(FragmentSource::class, new class implements FragmentSource
     {
-        public function request(RegionRequest $request): void
+        public function request(RegionBatch $batch): void
         {
             // A source answering at once, from a cache say.
-            ServerRegion::deliver($request, SUMMARY);
+            ServerRegion::deliverBatch($batch, ['sales-summary' => ['fragment' => SUMMARY]]);
         }
 
         public function action(ActionRequest $request): void {}
-
-        public function batch(RegionBatch $batch): void {}
 
         public function watch(array $subscriptions): void {}
     });

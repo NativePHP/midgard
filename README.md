@@ -173,11 +173,49 @@ under `midgard.asgard` in config/midgard.php. Each option is described there,
 and `#[Server]` methods are covered in
 [docs/ASGARD-SERVER-METHODS.md](docs/ASGARD-SERVER-METHODS.md).
 
+### Requests and answers
+
+Every region render goes to `{base}/render` and names its regions in
+`regions`, a list even for one region. A server screen asks for
+`["screen"]`. Regions of one component that load at the same moment go in
+one request, at most 16 at a time.
+
+```json
+{"protocol":1,"component":"app.native.screens.home","regions":["stats","feed"],
+ "state":{"period":"week"}}
+```
+
+Every answer is a `fragments` map with one part per region. A part has the
+region's `version`, `made_at`, an optional `max_age` and the `fragment`. A
+server screen's part has `chrome` too. A part of `{"cached":true}` means the
+copy the request declared is still good.
+
+```json
+{"protocol":1,"fragments":{
+ "stats":{"version":"q3V0bG9yZW1pcHN1","made_at":1763150000123,
+  "fragment":{"type":"text","props":{"text":"42 sales"}}},
+ "feed":{"cached":true}}}
+```
+
+Each region in a request still has its own timer and failure. A region the
+answer leaves out fails with reason `invalid`.
+
+An action names exactly one region in `regions`, plus an `action` member. Its
+answer has that region's part, next to any other regions of the same
+component the server redrew with `refresh()`, and may carry `refresh` hints
+for other components. `#[Server]` calls and uploads still answer with
+`delta` and an optional `fragments` map.
+
+A server may refuse a request that names too many regions with
+`422 too_many_regions`. The client then sends the same regions again in two
+requests of half the size each, down to one region. One region refused that
+way fails with reason `server`.
+
 ### Telling the server about the app
 
 The Asgard protocol has no field for the platform, app version or anything
 else about the app. Send what the server should know with `state`, which adds
-keys to the state of every Asgard request (region renders and batches,
+keys to the state of every Asgard request (region renders,
 actions, `#[Server]` calls, uploads and each push stream subscription):
 
 ```php

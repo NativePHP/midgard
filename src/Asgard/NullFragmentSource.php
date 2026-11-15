@@ -12,17 +12,12 @@ use Native\Api\Client\Asgard\Contracts\FragmentSource;
  */
 class NullFragmentSource implements FragmentSource
 {
-    public function request(RegionRequest $request): void
+    public function request(RegionBatch $batch): void
     {
         //
     }
 
     public function action(ActionRequest $request): void
-    {
-        //
-    }
-
-    public function batch(RegionBatch $batch): void
     {
         //
     }

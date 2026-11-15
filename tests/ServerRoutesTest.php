@@ -59,17 +59,17 @@ it('refuses a malformed route list', function (string $plaintext) {
     'a route without a screen' => ['{"protocol":1,"version":"v","routes":[{"uri":"/a"}]}'],
 ]);
 
-it('hands back chrome with a fragment', function () {
+it('hands back chrome with the screen part', function () {
     $this->server->chrome = ['nav_bar' => ['title' => 'Promo']];
 
-    expect($this->client->render(['protocol' => 1, 'component' => 'promos.show', 'region' => 'screen', 'state' => []]))
-        ->toMatchArray(['ok' => true, 'chrome' => ['nav_bar' => ['title' => 'Promo']]]);
+    expect($this->client->render(['protocol' => 1, 'component' => 'promos.show', 'regions' => ['screen'], 'state' => []])['fragments']['screen'])
+        ->toMatchArray(['chrome' => ['nav_bar' => ['title' => 'Promo']]]);
 });
 
 it('refuses chrome that is not an object', function () {
-    $this->server->plaintext = '{"protocol":1,"region":"screen","fragment":[],"chrome":"x"}';
+    $this->server->plaintext = '{"protocol":1,"fragments":{"screen":{"fragment":[],"chrome":"x"}}}';
 
-    expect($this->client->render(['protocol' => 1, 'component' => 'promos.show', 'region' => 'screen', 'state' => []]))
+    expect($this->client->render(['protocol' => 1, 'component' => 'promos.show', 'regions' => ['screen'], 'state' => []]))
         ->toMatchArray(['ok' => false]);
 });
 

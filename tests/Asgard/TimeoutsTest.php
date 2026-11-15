@@ -9,7 +9,6 @@ use Native\Api\Client\Asgard\Events\ServerRegionFailed;
 use Native\Api\Client\Asgard\Events\ServerScreenFailed;
 use Native\Api\Client\Asgard\NullFragmentSource;
 use Native\Api\Client\Asgard\RegionBatch;
-use Native\Api\Client\Asgard\RegionRequest;
 use Native\Api\Client\Asgard\ServerMethods;
 use Native\Api\Client\Asgard\ServerRegion;
 use Native\Api\Client\Asgard\ServerScreen;
@@ -517,13 +516,8 @@ it('still throws for a region fragment that cannot be rendered while debugging, 
 it('fails a region whose source throws, as a network failure', function () {
     app()->instance(FragmentSource::class, new class extends NullFragmentSource
     {
-        public function request(RegionRequest $request): void
-        {
-            throw new RuntimeException('offline');
-        }
-
         // The screen's two regions go out together.
-        public function batch(RegionBatch $batch): void
+        public function request(RegionBatch $batch): void
         {
             throw new RuntimeException('offline');
         }

@@ -16,11 +16,11 @@ beforeEach(function () {
 
 function renderBody(array $overrides = []): array
 {
-    return ['protocol' => 1, 'component' => 'app.native.screens.home', 'region' => 'stats', 'state' => [], ...$overrides];
+    return ['protocol' => 1, 'component' => 'app.native.screens.home', 'regions' => ['stats'], 'state' => [], ...$overrides];
 }
 
 it('handshakes once, then signs, encrypts and verifies every render', function () {
-    expect($this->client->render(renderBody()))->toBe(['ok' => true, 'status' => 200, 'fragment' => ['type' => 'text', 'props' => ['text' => 'hi']]])
+    expect($this->client->render(renderBody()))->toBe(['ok' => true, 'status' => 200, 'fragments' => ['stats' => ['fragment' => ['type' => 'text', 'props' => ['text' => 'hi']]]]])
         ->and($this->client->render(renderBody()))->toMatchArray(['ok' => true]);
 
     expect($this->server->handshakes)->toBe(1)
@@ -30,12 +30,12 @@ it('handshakes once, then signs, encrypts and verifies every render', function (
 });
 
 it('hands back a well-formed version token and drops a malformed one', function (mixed $version, ?string $expected) {
-    $this->server->plaintext = json_encode(['protocol' => 1, 'region' => 'stats', 'version' => $version, 'fragment' => ['type' => 'text']]);
+    $this->server->plaintext = json_encode(['protocol' => 1, 'fragments' => ['stats' => ['version' => $version, 'fragment' => ['type' => 'text']]]]);
 
     $result = $this->client->render(renderBody());
 
     expect($result['ok'])->toBeTrue()
-        ->and($result['version'] ?? null)->toBe($expected);
+        ->and($result['fragments']['stats']['version'] ?? null)->toBe($expected);
 })->with([
     'a token' => ['q3V0bG9yZW1pcHN1', 'q3V0bG9yZW1pcHN1'],
     'not a string' => [5, null],
@@ -91,7 +91,7 @@ it('never hands back a fragment whose response does not verify', function (Closu
     $result = $this->client->render(renderBody());
 
     expect($result['ok'])->toBeFalse()
-        ->and($result)->not->toHaveKey('fragment')
+        ->and($result)->not->toHaveKey('fragments')
         ->and($result['error'])->toContain($error);
 })->with([
     'body changed' => [function ($s) {
@@ -168,19 +168,19 @@ it('undoes gzip after decrypting a compressed answer', function () {
         return $seen = $sealed;
     };
 
-    expect($this->client->render(renderBody()))->toMatchArray(['ok' => true, 'fragment' => ['type' => 'column', 'children' => $rows]])
+    expect($this->client->render(renderBody()))->toMatchArray(['ok' => true, 'fragments' => ['stats' => ['fragment' => ['type' => 'column', 'children' => $rows]]]])
         ->and($seen['headers']['content-encoding'])->toBe('aes128gcm')
         ->and($seen['headers']['asgard-content-coding'])->toBe('gzip');
 });
 
 it('fails, and never hands back a fragment, when an answer inflates past the cap', function () {
     $this->server->compress = true;
-    $this->server->plaintext = '{"fragment":"'.str_repeat('a', Gzip::MAX_INFLATED).'"}';
+    $this->server->plaintext = '{"fragments":{"stats":{"fragment":"'.str_repeat('a', Gzip::MAX_INFLATED).'"}}}';
 
     $result = $this->client->render(renderBody());
 
     expect($result['ok'])->toBeFalse()
-        ->and($result)->not->toHaveKey('fragment')
+        ->and($result)->not->toHaveKey('fragments')
         ->and($result['error'])->toContain('inflates past');
 });
 
@@ -191,7 +191,7 @@ it('refuses an answer whose compression marker was flipped or stripped', functio
 
     $result = $this->client->render(renderBody());
 
-    expect($result['ok'])->toBeFalse()->and($result)->not->toHaveKey('fragment');
+    expect($result['ok'])->toBeFalse()->and($result)->not->toHaveKey('fragments');
 })->with([
     'flipped' => [function ($s) {
         $s['headers']['asgard-content-coding'] = 'identity';
@@ -210,26 +210,30 @@ it('refuses an answer whose compression marker was flipped or stripped', functio
     }],
 ]);
 
-// ── Inline fragments, hints and batches ─────────────
+// ── Parts, inline fragments and hints ───────────
 
-it('hands back the regions and hints an action answer carries', function () {
+it('hands back the action\'s own region next to the regions and hints its answer carries', function () {
     $this->server->plaintext = json_encode([
-        'protocol' => 1, 'region' => 'stats', 'version' => 'v1', 'fragment' => ['type' => 'text'],
-        'fragments' => ['greeting' => ['version' => 'v2', 'fragment' => ['type' => 'column'], 'chrome' => []]],
+        'protocol' => 1,
+        'fragments' => [
+            'stats' => ['version' => 'v1', 'made_at' => 1763150000123, 'fragment' => ['type' => 'text']],
+            'greeting' => ['version' => 'v2', 'fragment' => ['type' => 'column'], 'chrome' => []],
+        ],
         'refresh' => [['component' => 'app.inbox']],
     ]);
 
     expect($this->client->render(renderBody(['action' => ['call' => 'bump', 'args' => []]])))->toBe([
         'ok' => true, 'status' => 200,
-        'fragment' => ['type' => 'text'], 'version' => 'v1',
-        'fragments' => ['greeting' => ['fragment' => ['type' => 'column'], 'version' => 'v2', 'chrome' => []]],
+        'fragments' => [
+            'stats' => ['fragment' => ['type' => 'text'], 'version' => 'v1', 'made_at' => 1763150000123],
+            'greeting' => ['fragment' => ['type' => 'column'], 'version' => 'v2', 'chrome' => []],
+        ],
         'refresh' => [['component' => 'app.inbox']],
     ]);
 });
 
-it('sends a batch and hands back one part per region', function () {
+it('sends several regions and hands back one part per region', function () {
     $body = renderBody(['regions' => ['stats', 'chart']]);
-    unset($body['region']);
 
     $this->server->plaintext = json_encode(['protocol' => 1, 'fragments' => [
         'stats' => ['version' => 'v1', 'fragment' => ['type' => 'text']],
@@ -245,26 +249,25 @@ it('sends a batch and hands back one part per region', function () {
         ->and($this->server->requests[0]['nonce'])->toBeNull();
 });
 
-it('refuses a batch answer that is not one', function (string $plaintext) {
-    $body = renderBody(['regions' => ['stats']]);
-    unset($body['region']);
-
+it('refuses an answer that is not a fragments map', function (string $plaintext) {
     $this->server->plaintext = $plaintext;
 
-    expect($this->client->render($body))->toBe(['ok' => false, 'status' => 200, 'error' => 'bad response']);
+    expect($this->client->render(renderBody()))->toBe(['ok' => false, 'status' => 200, 'error' => 'bad response']);
 })->with([
-    'a single answer' => ['{"protocol":1,"region":"stats","fragment":{"type":"text"}}'],
+    'the old single answer' => ['{"protocol":1,"region":"stats","fragment":{"type":"text"}}'],
+    'the old cached answer' => ['{"protocol":1,"cached":true}'],
     'a part without a fragment' => ['{"protocol":1,"fragments":{"stats":{"version":"v1"}}}'],
     'chrome that is not an object' => ['{"protocol":1,"fragments":{"stats":{"fragment":{},"chrome":"x"}}}'],
     'a list' => ['{"protocol":1,"fragments":[{"fragment":{}}]}'],
+    'an empty map' => ['{"protocol":1,"fragments":{}}'],
+    'a bare fragment for a part' => ['{"protocol":1,"fragments":{"stats":{"type":"text"}}}'],
+    'a hint that is a string' => ['{"protocol":1,"fragments":{"stats":{"fragment":{}}},"refresh":["app.inbox"]}'],
 ]);
 
-it('refuses an action answer with malformed extras', function (string $extra) {
-    $this->server->plaintext = '{"protocol":1,"region":"stats","fragment":{"type":"text"},'.$extra.'}';
+it('hands back a too_many_regions refusal with its status and error', function () {
+    $this->server->plaintext = null;
+    $this->server->tooManyRegions = true;
 
-    expect($this->client->render(renderBody(['action' => ['call' => 'bump', 'args' => []]])))
-        ->toBe(['ok' => false, 'status' => 200, 'error' => 'bad response']);
-})->with([
-    'bare fragments' => ['"fragments":{"greeting":{"type":"text"}}'],
-    'a hint that is a string' => ['"refresh":["app.inbox"]'],
-]);
+    expect($this->client->render(renderBody(['regions' => ['a', 'b']])))
+        ->toBe(['ok' => false, 'status' => 422, 'error' => 'too_many_regions']);
+});

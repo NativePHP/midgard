@@ -35,8 +35,14 @@ class AsgardClient
 {
     public const ENCODING = 'tree/json';
 
-    /** At most this many regions, or hints, in one answer. */
+    /** At most this many hints in one answer. */
     public const MAX_PARTS = 16;
+
+    /**
+     * At most this many parts in one answer: the 16 regions a request names
+     * at most, or an action's own region and 16 it redrew inline.
+     */
+    public const MAX_FRAGMENTS = self::MAX_PARTS + 1;
 
     /** The response header that says the server redrew every region despite the device's cache. */
     public const CACHE_HEADER = 'asgard-cache';
@@ -292,23 +298,21 @@ class AsgardClient
 
     /**
      * One render or server action. Actions (a body with `action`) carry a nonce.
-     * A server screen's answer also carries its chrome, which comes back as is
-     * for the device to check. The region's version token comes back too,
-     * when the server sent a well-formed one.
      *
-     * An action's answer may also carry `fragments`, other regions of the
-     * same component the action asked for, and `refresh`, hints naming other
-     * components. A body with `regions` is a batch, and its answer is only
-     * `fragments`, one part per region.
+     * Every answer is a `fragments` map, one part per region (§3.1). A part
+     * is `{version, made_at, max_age?, fragment, chrome?}`, or `{cached: true}`
+     * when the request declared a copy the server still holds good. A server
+     * screen's part also carries its chrome, which comes back as is for the
+     * device to check. The version token, `made_at` and `max_age` come back
+     * only when well-formed.
      *
-     * Each fragment comes back with the server's `made_at` and `max_age`
-     * when it sent well-formed ones. When the request declared a cached copy
-     * the server still holds good, the answer is `cached: true` in place of
-     * the fragment, and a batch part is `{cached: true}`. `invalidate` is
-     * true when the response carried a signed `Asgard-Cache: invalidate`.
+     * An action's answer holds its own region's part next to any other
+     * regions of the same component the action redrew, and may carry
+     * `refresh`, hints naming other components. `invalidate` is true when
+     * the response carried a signed `Asgard-Cache: invalidate`.
      *
      * @param  array<string, mixed>  $body  The wire body, protocol member included.
-     * @return array{ok: bool, status: int, fragment?: mixed, chrome?: array, version?: string, fragments?: array<string, array{fragment: mixed, version?: string, chrome?: array}>, refresh?: list<array{component: string, region?: string}>, error?: string}
+     * @return array{ok: bool, status: int, fragments?: array<string, array{fragment?: mixed, version?: string, chrome?: array, made_at?: int, max_age?: int, cached?: true}>, refresh?: list<array{component: string, region?: string}>, invalidate?: true, error?: string}
      */
     public function render(array $body): array
     {
@@ -318,38 +322,13 @@ class AsgardClient
             return $result;
         }
 
-        $json = $result['json'];
-        $bad = ['ok' => false, 'status' => $result['status'], 'error' => 'bad response'];
-
-        $flag = $result['invalidate'] ? ['invalidate' => true] : [];
-
-        if (array_key_exists('regions', $body)) {
-            $parts = self::parts($json['fragments'] ?? null);
-
-            return $parts === null ? $bad : ['ok' => true, 'status' => $result['status'], 'fragments' => $parts, ...$flag];
-        }
-
-        if (! array_key_exists('fragment', $json)) {
-            if (($json['cached'] ?? null) !== true || ($more = self::more($json)) === null) {
-                return $bad;
-            }
-
-            return ['ok' => true, 'status' => $result['status'], 'cached' => true, ...$more, ...$flag];
-        }
-
-        $part = self::part($json);
-
-        if ($part === null) {
-            return ['ok' => false, 'status' => $result['status'], 'error' => 'chrome is not an object'];
-        }
-
-        $more = self::more($json);
+        $more = array_key_exists('fragments', $result['json']) ? self::more($result['json']) : null;
 
         if ($more === null) {
-            return $bad;
+            return ['ok' => false, 'status' => $result['status'], 'error' => 'bad response'];
         }
 
-        return ['ok' => true, 'status' => $result['status'], ...$part, ...$more, ...$flag];
+        return ['ok' => true, 'status' => $result['status'], ...$more, ...($result['invalidate'] ? ['invalidate' => true] : [])];
     }
 
     /**
@@ -474,7 +453,7 @@ class AsgardClient
      */
     protected static function parts(mixed $fragments): ?array
     {
-        if (! is_array($fragments) || $fragments === [] || array_is_list($fragments) || count($fragments) > self::MAX_PARTS) {
+        if (! is_array($fragments) || $fragments === [] || array_is_list($fragments) || count($fragments) > self::MAX_FRAGMENTS) {
             return null;
         }
 

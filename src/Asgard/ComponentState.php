@@ -22,7 +22,7 @@ use ReflectionProperty;
  * what the props it was sent with give. It is read-only: a delta cannot
  * set it (ServerMethods::reconcile()).
  *
- * Every path that gathers state (region requests and batches, actions,
+ * Every path that gathers state (region requests, actions,
  * `#[Server]` calls, uploads, and the push subscriptions built from what
  * was sent) reads it from here, so a new path cannot forget a rule. Kept
  * per class, since a class's props cannot change at runtime.

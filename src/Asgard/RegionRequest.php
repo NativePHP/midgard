@@ -3,7 +3,9 @@
 namespace Native\Api\Client\Asgard;
 
 /**
- * One ask for one region's fragment, handed to the bound FragmentSource.
+ * One ask for one region's fragment. It goes to the bound FragmentSource
+ * inside a RegionBatch, which is the request on the wire, alone or with
+ * other regions of the same component.
  *
  * `component` is the dot-notation address of the component that rendered
  * the region (ComponentAddress, protocol §4), which is a child component
@@ -37,15 +39,9 @@ class RegionRequest
         public readonly ?string $reason = null,
     ) {}
 
-    /** The body a transport signs, encrypts and sends. */
+    /** The body this region goes out with when it is asked for alone. */
     public function toArray(): array
     {
-        return [
-            'component' => $this->component,
-            'region' => $this->region,
-            'state' => $this->state,
-            ...($this->cache === [] ? [] : ['cache' => $this->cache]),
-            ...($this->reason === null ? [] : ['reason' => $this->reason]),
-        ];
+        return (new RegionBatch([$this]))->toArray();
     }
 }

@@ -24,7 +24,7 @@ afterEach(fn () => Stream::unfake());
 
 function probeBody(): array
 {
-    return ['protocol' => 1, 'component' => 'promos.show', 'region' => 'screen', 'state' => []];
+    return ['protocol' => 1, 'component' => 'promos.show', 'regions' => ['screen'], 'state' => []];
 }
 
 it('handshakes with a plain POST, then sends real QUERY and remembers it', function () {
@@ -39,7 +39,7 @@ it('handshakes with a plain POST, then sends real QUERY and remembers it', funct
 it('falls back to POST plus the header, signed afresh, and remembers that', function (int $status) {
     $this->server->blockQuery = $status;
 
-    expect($this->client->render(probeBody()))->toMatchArray(['ok' => true, 'fragment' => $this->server->fragment]);
+    expect($this->client->render(probeBody()))->toMatchArray(['ok' => true, 'fragments' => ['screen' => ['fragment' => $this->server->fragment]]]);
 
     // The fallback verified on the server, so its signature covers POST and the header.
     expect($this->server->methods)->toBe(['POST', 'QUERY', 'POST'])
