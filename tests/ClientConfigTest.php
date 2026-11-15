@@ -80,7 +80,7 @@ it('sends the extra element types in a plain POST handshake, without the overrid
     $client->handshake();
 
     expect($server->methods)->toBe(['POST'])
-        ->and($server->handshakeBodies[0])->toMatchArray(['protocol' => 1, 'elements' => ['list_item', 'toggle']]);
+        ->and($server->handshakeBodies[0])->toMatchArray(['protocols' => [1], 'elements' => ['list_item', 'toggle']]);
 });
 
 it('sends an empty elements list when there is nothing beyond core', function () {
