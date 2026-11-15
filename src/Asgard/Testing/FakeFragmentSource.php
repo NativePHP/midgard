@@ -41,6 +41,14 @@ use PHPUnit\Framework\Assert;
  *     $source->assertBatched(['sales-summary', 'chart']);
  *     $source->respondToBatch(fragments: ['sales-summary' => ['fragment' => [...]]]);
  *
+ * The region cache is answered the same way. Pass the server's `made_at`
+ * (and `max_age`) for the fragment to be stored, `invalidate: true` for a
+ * response that carried `Asgard-Cache: invalidate`, and answer a declared
+ * copy as still good with respondCached():
+ *
+ *     $source->respond('stats', $tree, madeAt: 1763150000123, maxAge: 60);
+ *     $source->respondCached('stats');
+ *
  * A failure is reported with fail() or failAction(), through
  * ServerRegion::failed(), as a real source reports one. The screen acts
  * on it at its next turn, which wait() takes:
@@ -267,9 +275,27 @@ class FakeFragmentSource implements FragmentSource
      *
      * The screen paints it on its next frame, as on a device, so follow
      * with an interaction (or emitNative()) to see it. `$version` is the
-     * answer's version token, as a server would send it.
+     * answer's version token, as a server would send it. `$madeAt` and
+     * `$maxAge` are the server's, and `$invalidate` stands for a signed
+     * `Asgard-Cache: invalidate` on the response.
      */
-    public function respond(RegionRequest|string $request, array|string $tree, ?string $version = null): bool
+    public function respond(RegionRequest|string $request, array|string $tree, ?string $version = null, ?array $chrome = null, ?int $madeAt = null, ?int $maxAge = null, bool $invalidate = false): bool
+    {
+        $request = $this->resolveRequest($request);
+
+        return ServerRegion::deliver($request, $tree, $chrome, $version, [], [], $madeAt, $maxAge, $invalidate);
+    }
+
+    /**
+     * Answer a request with `{"cached": true}`: the copy it declared is
+     * still good. Same rules as respond().
+     */
+    public function respondCached(RegionRequest|string $request, array $fragments = [], array $refresh = []): bool
+    {
+        return ServerRegion::deliverCached($this->resolveRequest($request), $fragments, $refresh);
+    }
+
+    protected function resolveRequest(RegionRequest|string $request): RegionRequest
     {
         if (is_string($request)) {
             $region = $request;
@@ -278,14 +304,14 @@ class FakeFragmentSource implements FragmentSource
             Assert::assertNotNull($request, "Region [{$region}] was never requested, so there is nothing to answer.");
         }
 
-        return ServerRegion::deliver($request, $tree, null, $version);
+        return $request;
     }
 
     /**
      * Answer a server action: the ActionRequest itself, or a region name
      * for the latest action sent from it. Same rules as respond().
      */
-    public function respondToAction(ActionRequest|string $action, array|string $tree, array $fragments = [], array $refresh = []): bool
+    public function respondToAction(ActionRequest|string $action, array|string|null $tree, array $fragments = [], array $refresh = [], ?int $madeAt = null, ?int $maxAge = null, bool $invalidate = false): bool
     {
         if (is_string($action)) {
             $region = $action;
@@ -294,7 +320,12 @@ class FakeFragmentSource implements FragmentSource
             Assert::assertNotNull($action, "Region [{$region}] never sent an action, so there is nothing to answer.");
         }
 
-        return ServerRegion::deliver($action, $tree, null, null, $fragments, $refresh);
+        // A null tree is the server's `{"cached": true}` for the action's own region.
+        if ($tree === null) {
+            return ServerRegion::deliverCached($action, $fragments, $refresh, $invalidate);
+        }
+
+        return ServerRegion::deliver($action, $tree, null, null, $fragments, $refresh, $madeAt, $maxAge, $invalidate);
     }
 
     /**
@@ -302,13 +333,13 @@ class FakeFragmentSource implements FragmentSource
      * `{region: {fragment, version?, chrome?}}`. Returns how many regions
      * were painted. A region left out fails as the device would fail it.
      */
-    public function respondToBatch(?RegionBatch $batch = null, array $fragments = []): int
+    public function respondToBatch(?RegionBatch $batch = null, array $fragments = [], bool $invalidate = false): int
     {
         $batch ??= $this->lastBatch();
 
         Assert::assertNotNull($batch, 'No batch was sent, so there is nothing to answer.');
 
-        return ServerRegion::deliverBatch($batch, $fragments);
+        return ServerRegion::deliverBatch($batch, $fragments, $invalidate);
     }
 
     /** Report a whole batch as failed, the last one sent when none is given. */

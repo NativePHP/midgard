@@ -17,6 +17,13 @@ namespace Native\Api\Client\Asgard;
  * superseded one can be told apart and dropped, and it is not part of
  * the wire body. Nor is `componentClass`, which is here for local use
  * only: the server MUST NOT see a class name (§4).
+ *
+ * `cache` is the region cache's `{region: {made_at, ttl}}` for the copies
+ * of this component's regions the device holds and still counts as good
+ * (RegionCache). It is sent only when it has an entry.
+ *
+ * `reason` is `push` for a fetch a push stream signal caused, and null
+ * (left off the wire) for every other.
  */
 class RegionRequest
 {
@@ -26,6 +33,8 @@ class RegionRequest
         public readonly string $region,
         public readonly array $state,
         public readonly ?string $componentClass = null,
+        public readonly array $cache = [],
+        public readonly ?string $reason = null,
     ) {}
 
     /** The body a transport signs, encrypts and sends. */
@@ -35,6 +44,8 @@ class RegionRequest
             'component' => $this->component,
             'region' => $this->region,
             'state' => $this->state,
+            ...($this->cache === [] ? [] : ['cache' => $this->cache]),
+            ...($this->reason === null ? [] : ['reason' => $this->reason]),
         ];
     }
 }

@@ -43,6 +43,13 @@ final class Wire
 
     public const RESPONSE_COMPONENTS = ['@status', 'content-type', 'content-encoding', 'asgard-content-coding', 'content-digest', 'asgard-protocol'];
 
+    /**
+     * Covered right after the rest of RESPONSE_COMPONENTS, before the
+     * request's signature, only when the response carries them. A response
+     * that carries one without covering it does not verify.
+     */
+    public const OPTIONAL_RESPONSE_COMPONENTS = ['asgard-cache'];
+
     // Requests
 
     /**
@@ -201,7 +208,12 @@ final class Wire
         ?int $created = null,
         ?string $salt = null,
         bool $compress = false,
+        ?string $cache = null,
     ): array {
+        if ($cache !== null && ! preg_match('/^[a-z]{1,32}$/D', $cache)) {
+            throw new SecurityException('Asgard-Cache must be a short lowercase word.');
+        }
+
         $gzip = $compress && strlen($plaintext) >= Gzip::MIN_SIZE;
         $body = Aes128Gcm::encrypt($gzip ? Gzip::encode($plaintext) : $plaintext, $keys->encServer, $session, Aes128Gcm::RECORD_SIZE, $salt);
 
@@ -211,9 +223,10 @@ final class Wire
             'asgard-content-coding' => $gzip ? 'gzip' : 'identity',
             'content-digest' => ContentDigest::header($body),
             'asgard-protocol' => self::PROTOCOL,
+            ...($cache === null ? [] : ['asgard-cache' => $cache]),
         ];
 
-        [$input, $base] = self::signatureBase(self::responseComponents(), self::responseParams($created ?? time(), $session), self::responseValue($status, $headers, $requestSignature));
+        [$input, $base] = self::signatureBase(self::responseComponents($headers), self::responseParams($created ?? time(), $session), self::responseValue($status, $headers, $requestSignature));
 
         $signature = hash_hmac('sha256', $base, $keys->sigServer, true);
 
@@ -249,7 +262,7 @@ final class Wire
 
         [$items, $params, $signature] = self::signatureFrom($headers);
 
-        if (StructuredFields::serializeInnerList($items, []) !== StructuredFields::serializeInnerList(self::responseComponents(), [])) {
+        if (StructuredFields::serializeInnerList($items, []) !== StructuredFields::serializeInnerList(self::responseComponents($headers), [])) {
             throw new SecurityException('The signature does not cover the components a response must cover.');
         }
 
@@ -374,10 +387,23 @@ final class Wire
         return array_map(fn (string $name) => StructuredFields::string($name) + ['params' => []], $names);
     }
 
-    /** @return list<array{type: string, value: string, params: array}> */
-    private static function responseComponents(): array
+    /**
+     * The response components to cover, given the headers being sent.
+     *
+     * @param  array<string, string>  $headers  lowercase names
+     * @return list<array{type: string, value: string, params: array}>
+     */
+    private static function responseComponents(array $headers): array
     {
-        $items = self::components(self::RESPONSE_COMPONENTS);
+        $names = self::RESPONSE_COMPONENTS;
+
+        foreach (self::OPTIONAL_RESPONSE_COMPONENTS as $name) {
+            if (array_key_exists($name, $headers)) {
+                $names[] = $name;
+            }
+        }
+
+        $items = self::components($names);
         $items[] = StructuredFields::string('signature') + ['params' => [
             'req' => StructuredFields::boolean(true),
             'key' => StructuredFields::string(self::LABEL),

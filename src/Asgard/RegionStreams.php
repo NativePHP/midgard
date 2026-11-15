@@ -57,7 +57,7 @@ class RegionStreams
     protected bool $retried = false;
 
     /**
-     * @param  Closure(string $component, array $state, string $region, array $fragment, ?array $chrome, string $version): int  $pusher
+     * @param  Closure(string $component, array $state, string $region, array $fragment, ?array $chrome, string $version, ?int $madeAt, ?int $maxAge): int  $pusher
      * @param  Closure(string $component, array $state, string $region, string $version): int  $signaller
      * @param  (Closure(Closure(bool): void): void)|null  $refresh  Gets a new session off the UI lane, then calls back.
      *                                                              Without one, the handshake runs inline (tests).
@@ -154,7 +154,10 @@ class RegionStreams
         // A server screen's event carries its chrome too, checked by the screen.
         $chrome = $payload['chrome'] ?? null;
 
-        ($this->pusher)($subscription['component'], $subscription['state'], $region, $payload['fragment'], is_array($chrome) ? $chrome : null, $version);
+        $madeAt = is_int($payload['made_at'] ?? null) && $payload['made_at'] > 0 ? $payload['made_at'] : null;
+        $maxAge = is_int($payload['max_age'] ?? null) && $payload['max_age'] >= 0 ? $payload['max_age'] : null;
+
+        ($this->pusher)($subscription['component'], $subscription['state'], $region, $payload['fragment'], is_array($chrome) ? $chrome : null, $version, $madeAt, $maxAge);
     }
 
     public function opened(StreamOpened $event): void

@@ -40,6 +40,28 @@ return [
         // default store.
         'session_store' => env('ASGARD_SESSION_STORE'),
 
+        // The region cache. The device keeps a copy of each region and
+        // server screen it got, and paints it at once the next time the
+        // region loads, even after the app was closed. It still asks the
+        // server, and declares the copy, so the server can say the copy is
+        // still good or send a new one.
+        'cache' => [
+            // Seconds a copy counts as good, for every region and server
+            // screen. 0 turns the cache off. A region can set its own with
+            // @server('stats', cacheTtl: 300), and 0 there turns it off for
+            // that region. The server's max age for a region can cut it
+            // shorter. A copy older than this is still painted while the
+            // request is out, but it is not declared, so the server sends a
+            // new fragment.
+            'ttl' => (int) env('ASGARD_CACHE_TTL', 0),
+
+            // The cache store the copies live in. It must keep them when the
+            // app quits, so not `array`. null means the app's default store,
+            // which NativePHP keeps in the app's persistent storage on the
+            // device. Call RegionCache::flush() when the user logs out.
+            'store' => env('ASGARD_CACHE_STORE'),
+        ],
+
         // Hold one Server-Sent Events stream open per device, so the server
         // can say when a region on screen changed. The stream lives in
         // native code. Off by default: an open stream ties up a PHP worker

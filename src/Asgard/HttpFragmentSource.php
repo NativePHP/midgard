@@ -40,6 +40,11 @@ use Native\Mobile\AsyncTask;
  * the fragment. The device uses it to say what it already holds when it
  * subscribes to the push stream.
  *
+ * Each fragment also carries the server's `made_at` and `max_age`, which
+ * the region cache stores with it. An answer of `cached: true` (the copy
+ * the request declared is still good) goes to deliverCached() instead, and
+ * a signed `Asgard-Cache: invalidate` on the response is handed over too.
+ *
  * With streaming on, watch() hands the device's set of subscriptions to the
  * push stream (RegionStreams). The device only watches regions that already
  * got a good answer, so the session the stream is signed with exists. With
@@ -130,7 +135,18 @@ class HttpFragmentSource implements FragmentSource
      */
     public static function answered(RegionRequest $request, mixed $result, string $endpoint, string $what): void
     {
-        if (is_array($result) && ($result['ok'] ?? false)) {
+        if (is_array($result) && ($result['ok'] ?? false) && ($result['cached'] ?? false) === true) {
+            ServerRegion::deliverCached(
+                $request,
+                $result['fragments'] ?? [],
+                $result['refresh'] ?? [],
+                ($result['invalidate'] ?? false) === true,
+            );
+
+            return;
+        }
+
+        if (is_array($result) && ($result['ok'] ?? false) && array_key_exists('fragment', $result)) {
             ServerRegion::deliver(
                 $request,
                 $result['fragment'],
@@ -138,6 +154,9 @@ class HttpFragmentSource implements FragmentSource
                 $result['version'] ?? null,
                 $result['fragments'] ?? [],
                 $result['refresh'] ?? [],
+                is_int($result['made_at'] ?? null) ? $result['made_at'] : null,
+                is_int($result['max_age'] ?? null) ? $result['max_age'] : null,
+                ($result['invalidate'] ?? false) === true,
             );
 
             return;
@@ -156,7 +175,7 @@ class HttpFragmentSource implements FragmentSource
     public static function answeredBatch(RegionBatch $batch, mixed $result, string $endpoint, string $what): void
     {
         if (is_array($result) && ($result['ok'] ?? false) && is_array($result['fragments'] ?? null)) {
-            ServerRegion::deliverBatch($batch, $result['fragments']);
+            ServerRegion::deliverBatch($batch, $result['fragments'], ($result['invalidate'] ?? false) === true);
 
             return;
         }

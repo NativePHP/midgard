@@ -25,6 +25,7 @@ final class UploadRequest
         public readonly string $filename,
         public readonly string $mime,
         public readonly int $size,
+        public readonly array $cache = [],
     ) {}
 
     /** The frame header, without the bytes. A transport adds `protocol`. */
@@ -38,6 +39,7 @@ final class UploadRequest
             'filename' => $this->filename,
             'mime' => $this->mime,
             'size' => $this->size,
+            ...($this->cache === [] ? [] : ['cache' => $this->cache]),
         ];
     }
 

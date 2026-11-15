@@ -221,6 +221,64 @@ is not keyed by headers, so a shared region must not depend on one; send it in
 headers, and anything starting `Asgard-` or `X-Asgard-`) are refused with an
 exception. A callable that gives null leaves the header out of that request.
 
+### The region cache
+
+The app can keep a copy of each region and server screen it gets, and paint
+it at once the next time that region loads, even after the app was closed. It
+is off until you give it a TTL in seconds:
+
+```php
+'cache' => [
+    'ttl' => 300,     // ASGARD_CACHE_TTL, 0 is off
+    'store' => null,  // ASGARD_CACHE_STORE, null is the app's default store
+],
+```
+
+A region can set its own TTL, and 0 turns it off for that region. Server
+screens use the config value.
+
+```blade
+@server('stats', cacheTtl: 60)
+    <native:text>Loading…</native:text>
+@endserver
+```
+
+The store must keep its data when the app quits, so not `array`. The app's
+default store does on a device. Copies are keyed by the server, the component,
+the region and the state the request sent, so other state never paints
+another state's copy.
+
+A cached copy does not stop the request. The request declares each copy that
+is still within its TTL, and the server either answers that the copy is still
+good or sends a new fragment. A copy past its TTL is still painted while the
+request is out, but it is not declared. The server's `max_age` for a region
+can cut the TTL shorter. A region painted from the cache joins the push stream
+only once the server has answered for it.
+
+The server can force a redraw with `Asgard-Cache: invalidate`. Before such a
+fragment replaces a cached copy, `RegionCacheInvalidation` fires. The new
+fragment is applied on the screen's next turn unless a listener keeps the copy:
+
+```php
+use Native\Api\Client\Asgard\Events\CacheDecision;
+use Native\Api\Client\Asgard\Events\RegionCacheInvalidation;
+
+#[On(RegionCacheInvalidation::class, when: ['region' => 'drafts'])]
+public function draftsChanged(CacheDecision $decision, ?int $oldMadeAt, ?int $newMadeAt): void
+{
+    $decision->ignore();
+}
+```
+
+A Laravel listener gets the event and can call `$event->ignore()`.
+
+Clear the cache when the user logs out, so the next user never sees the last
+one's fragments:
+
+```php
+\Native\Api\Client\Asgard\RegionCache::flush();
+```
+
 ## Testing
 
 ```shell

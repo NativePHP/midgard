@@ -28,6 +28,7 @@ final class ServerRequest
         public readonly string $method,
         public readonly array $args,
         public readonly array $state,
+        public readonly array $cache = [],
     ) {}
 
     /** The body a transport signs, encrypts and sends. */
@@ -38,6 +39,7 @@ final class ServerRequest
             'method' => $this->method,
             'args' => $this->args,
             'state' => $this->state,
+            ...($this->cache === [] ? [] : ['cache' => $this->cache]),
         ];
     }
 }

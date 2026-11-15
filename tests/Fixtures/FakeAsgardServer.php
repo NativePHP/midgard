@@ -58,6 +58,9 @@ class FakeAsgardServer
     /** The delta a #[Server] call answers with. */
     public array $delta = ['roll' => 4];
 
+    /** The Asgard-Cache value to seal into each answer, or null for none. */
+    public ?string $cacheHeader = null;
+
     /** Answer with exactly this plaintext instead of a fragment message. */
     public ?string $plaintext = null;
 
@@ -184,7 +187,7 @@ class FakeAsgardServer
         };
 
         $plaintext = $this->plaintext ?? json_encode($message);
-        $sealed = Wire::sealResponse($this->sessions[$session], $session, 200, $plaintext, $opened['signature'], null, null, $this->compress);
+        $sealed = Wire::sealResponse($this->sessions[$session], $session, 200, $plaintext, $opened['signature'], null, null, $this->compress, $this->cacheHeader);
 
         if ($this->tamper !== null) {
             $sealed = ($this->tamper)($sealed);

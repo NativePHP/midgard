@@ -70,7 +70,7 @@ class AsgardServiceProvider extends ServiceProvider
         if (config('midgard.asgard.stream')) {
             $this->app->singleton(RegionStreams::class, fn () => new RegionStreams(
                 AsgardClient::make($config),
-                static fn (string $component, array $state, string $region, array $fragment, ?array $chrome, string $version) => ServerRegion::push($component, $state, $region, $fragment, $chrome, $version),
+                static fn (string $component, array $state, string $region, array $fragment, ?array $chrome, string $version, ?int $madeAt = null, ?int $maxAge = null) => ServerRegion::push($component, $state, $region, $fragment, $chrome, $version, $madeAt, $maxAge),
                 static fn (string $component, array $state, string $region, string $version) => ServerRegion::signal($component, $state, $region, $version),
                 // The handshake is network, so it runs on an AsyncTask lane.
                 static fn (\Closure $then) => AsyncTask::dispatch(self::handshakeWork($config))

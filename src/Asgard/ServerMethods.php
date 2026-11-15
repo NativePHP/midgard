@@ -171,6 +171,7 @@ class ServerMethods
             method: $method,
             args: $args,
             state: $state,
+            cache: ServerRegion::declaredCache($component, ServerRegion::stateOf($component)),
         );
 
         return static::begin(
@@ -233,6 +234,7 @@ class ServerMethods
             filename: basename($real),
             mime: UploadRequest::guessMime($real),
             size: $size,
+            cache: ServerRegion::declaredCache($component, ServerRegion::stateOf($component)),
         );
 
         return static::begin(
@@ -333,7 +335,7 @@ class ServerMethods
      * Payload shape, as posted by the native layer:
      *
      *   ['id' => string, 'ok' => bool, 'delta' => array,
-     *    'fragments' => array, 'refresh' => array,
+     *    'fragments' => array, 'refresh' => array, 'invalidate' => bool,
      *    'error' => ?string, 'code' => int|string|null]
      *
      * `fragments` and `refresh` are what refresh() asked for on the server:
@@ -413,7 +415,8 @@ class ServerMethods
         $refusedFragments = static::applyFragments(
             $component,
             $entry,
-            is_array($payload['fragments'] ?? null) ? $payload['fragments'] : []
+            is_array($payload['fragments'] ?? null) ? $payload['fragments'] : [],
+            ($payload['invalidate'] ?? false) === true,
         );
 
         if (is_array($payload['refresh'] ?? null) && $payload['refresh'] !== []) {
@@ -820,11 +823,11 @@ class ServerMethods
      * @param  array{stamp: string, state: array}  $entry
      * @return array region => why the fragment was refused
      */
-    protected static function applyFragments(NativeComponent $component, array $entry, array $fragments): array
+    protected static function applyFragments(NativeComponent $component, array $entry, array $fragments, bool $invalidate = false): array
     {
         return $fragments === []
             ? []
-            : ServerRegion::paintInline($component, $entry['stamp'], $fragments, $entry['state']);
+            : ServerRegion::paintInline($component, $entry['stamp'], $fragments, $entry['state'], $invalidate);
     }
 
     /**

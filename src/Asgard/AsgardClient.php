@@ -38,6 +38,9 @@ class AsgardClient
     /** At most this many regions, or hints, in one answer. */
     public const MAX_PARTS = 16;
 
+    /** The response header that says the server redrew every region despite the device's cache. */
+    public const CACHE_HEADER = 'asgard-cache';
+
     /** Unsigned answers a server may give before it checks a request (§7.3), by status. */
     public const EARLY_REJECTIONS = [
         403 => ['forbidden', 'nonce_required'],
@@ -298,6 +301,12 @@ class AsgardClient
      * components. A body with `regions` is a batch, and its answer is only
      * `fragments`, one part per region.
      *
+     * Each fragment comes back with the server's `made_at` and `max_age`
+     * when it sent well-formed ones. When the request declared a cached copy
+     * the server still holds good, the answer is `cached: true` in place of
+     * the fragment, and a batch part is `{cached: true}`. `invalidate` is
+     * true when the response carried a signed `Asgard-Cache: invalidate`.
+     *
      * @param  array<string, mixed>  $body  The wire body, protocol member included.
      * @return array{ok: bool, status: int, fragment?: mixed, chrome?: array, version?: string, fragments?: array<string, array{fragment: mixed, version?: string, chrome?: array}>, refresh?: list<array{component: string, region?: string}>, error?: string}
      */
@@ -312,14 +321,20 @@ class AsgardClient
         $json = $result['json'];
         $bad = ['ok' => false, 'status' => $result['status'], 'error' => 'bad response'];
 
+        $flag = $result['invalidate'] ? ['invalidate' => true] : [];
+
         if (array_key_exists('regions', $body)) {
             $parts = self::parts($json['fragments'] ?? null);
 
-            return $parts === null ? $bad : ['ok' => true, 'status' => $result['status'], 'fragments' => $parts];
+            return $parts === null ? $bad : ['ok' => true, 'status' => $result['status'], 'fragments' => $parts, ...$flag];
         }
 
         if (! array_key_exists('fragment', $json)) {
-            return $bad;
+            if (($json['cached'] ?? null) !== true || ($more = self::more($json)) === null) {
+                return $bad;
+            }
+
+            return ['ok' => true, 'status' => $result['status'], 'cached' => true, ...$more, ...$flag];
         }
 
         $part = self::part($json);
@@ -334,7 +349,7 @@ class AsgardClient
             return $bad;
         }
 
-        return ['ok' => true, 'status' => $result['status'], ...$part, ...$more];
+        return ['ok' => true, 'status' => $result['status'], ...$part, ...$more, ...$flag];
     }
 
     /**
@@ -360,7 +375,7 @@ class AsgardClient
             return ['ok' => false, 'status' => $result['status'], 'error' => 'bad response'];
         }
 
-        return ['ok' => true, 'status' => $result['status'], 'delta' => $delta, ...$more];
+        return ['ok' => true, 'status' => $result['status'], 'delta' => $delta, ...$more, ...($result['invalidate'] ? ['invalidate' => true] : [])];
     }
 
     /**
@@ -406,7 +421,7 @@ class AsgardClient
             return ['ok' => false, 'status' => $result['status'], 'error' => 'bad response'];
         }
 
-        return ['ok' => true, 'status' => $result['status'], 'delta' => $delta, ...$more];
+        return ['ok' => true, 'status' => $result['status'], 'delta' => $delta, ...$more, ...($result['invalidate'] ? ['invalidate' => true] : [])];
     }
 
     /** The upload frame: header length, JSON header, bytes. */
@@ -452,9 +467,10 @@ class AsgardClient
     }
 
     /**
-     * `{region: {version?, fragment, chrome?}}`, at least one region, or null.
+     * `{region: {version?, fragment, chrome?, made_at?, max_age?}}`, at least
+     * one region, or null. A part may be `{cached: true}` instead.
      *
-     * @return array<string, array{fragment: mixed, version?: string, chrome?: array}>|null
+     * @return array<string, array{fragment?: mixed, version?: string, chrome?: array, made_at?: int, max_age?: int, cached?: true}>|null
      */
     protected static function parts(mixed $fragments): ?array
     {
@@ -465,6 +481,12 @@ class AsgardClient
         $parts = [];
 
         foreach ($fragments as $region => $part) {
+            if (is_array($part) && ! array_key_exists('fragment', $part) && ($part['cached'] ?? null) === true) {
+                $parts[(string) $region] = ['cached' => true];
+
+                continue;
+            }
+
             if (! is_array($part) || ! array_key_exists('fragment', $part) || ($part = self::part($part)) === null) {
                 return null;
             }
@@ -498,6 +520,16 @@ class AsgardClient
             }
 
             $part['chrome'] = $json['chrome'];
+        }
+
+        // When the server rendered it, in milliseconds, and how long it
+        // says a copy stays good, in seconds. Kept only when well-formed.
+        if (is_int($json['made_at'] ?? null) && $json['made_at'] > 0) {
+            $part['made_at'] = $json['made_at'];
+        }
+
+        if (is_int($json['max_age'] ?? null) && $json['max_age'] >= 0) {
+            $part['max_age'] = $json['max_age'];
         }
 
         return $part;
@@ -566,7 +598,7 @@ class AsgardClient
     /**
      * One sealed call to an endpoint, with the 419 retry.
      *
-     * @return array{ok: true, status: int, json: array<string, mixed>}|array{ok: false, status: int, error: string}
+     * @return array{ok: true, status: int, json: array<string, mixed>, invalidate: bool}|array{ok: false, status: int, error: string}
      */
     protected function call(string $endpoint, array $body, bool $action): array
     {
@@ -716,7 +748,10 @@ class AsgardClient
             return [true, ['ok' => false, 'status' => $status, 'error' => is_array($json) ? (string) ($json['error'] ?? 'bad response') : 'response was not JSON']];
         }
 
-        return [true, ['ok' => true, 'status' => $status, 'json' => $json]];
+        // Verified above: a response that carries the header has to cover it.
+        $invalidate = strtolower(trim($headers[self::CACHE_HEADER] ?? '')) === 'invalidate';
+
+        return [true, ['ok' => true, 'status' => $status, 'json' => $json, 'invalidate' => $invalidate]];
     }
 
     /** Whether an unsigned answer is one of §7.3's early rejections: a listed status with its listed body. */

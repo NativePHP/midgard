@@ -78,6 +78,7 @@ class HttpServerTransport implements ServerTransport
                 'delta' => $result['delta'],
                 'fragments' => is_array($result['fragments'] ?? null) ? $result['fragments'] : [],
                 'refresh' => is_array($result['refresh'] ?? null) ? $result['refresh'] : [],
+                'invalidate' => ($result['invalidate'] ?? false) === true,
             ]);
 
             return;

@@ -130,5 +130,26 @@
             "data": "{\"body\":\"VjrJ0DAOKqoXIUxt2IwqzwAAEAAYYVc1MFpYSnZjQzF6WlhOemFXOXVMVEF4LX_NP7FeLggxCkwO1jCabv7BqLnL5Py3bV7sO3rCKx-zb6P2vky6dkqlw3FF128Af7ipdHYzZGW1zntrvLMCdre-iuwwRTxMnhtEmg9q8ue_H9AS5fpcXgL8Qp1nKMViTow28Gs2y4uXDoqf5An2ndRH_6qYcW5IksmrlO4SoJSW1Yw7iMpR7oJiQANVlRMwr3TDhFudY9MeqXBOlFn5GCARtvBt3gBRWVH2V2NMnlDiR05l_Iw5oBbFIORsMfPHwJvsEhUH0cEHt38rMn9BjJkG74uRcA-fTBs2AcOMuJWgT7KzGGmZGAmLkg9BhPFZhZdW8OesbpknS8VGBpsoOLwHuwg2HTA5GXo1HmTvNJE_lgK_4wEEwFG4xTpx3yIDihIbNciScA_917kvLu02ZddyzR4Zp9IaIdCc8zhupYuPNgG41sNPb-y9s0a9sBMJOcg3q9_vzyMwizLY3Zk\",\"enc\":\"gzip\",\"sig\":\"4_kj_H9PpulLZaNQE1FU6czmVo5CNmcgnnHp-TF-lFw\"}",
             "signature_base": "asgard/1 event\n5cGFUuzny131NahKbNqfXFyvSr0WJkvqq4TVk1ZfQho=\n4\nfragment\ngzip\nVjrJ0DAOKqoXIUxt2IwqzwAAEAAYYVc1MFpYSnZjQzF6WlhOemFXOXVMVEF4LX_NP7FeLggxCkwO1jCabv7BqLnL5Py3bV7sO3rCKx-zb6P2vky6dkqlw3FF128Af7ipdHYzZGW1zntrvLMCdre-iuwwRTxMnhtEmg9q8ue_H9AS5fpcXgL8Qp1nKMViTow28Gs2y4uXDoqf5An2ndRH_6qYcW5IksmrlO4SoJSW1Yw7iMpR7oJiQANVlRMwr3TDhFudY9MeqXBOlFn5GCARtvBt3gBRWVH2V2NMnlDiR05l_Iw5oBbFIORsMfPHwJvsEhUH0cEHt38rMn9BjJkG74uRcA-fTBs2AcOMuJWgT7KzGGmZGAmLkg9BhPFZhZdW8OesbpknS8VGBpsoOLwHuwg2HTA5GXo1HmTvNJE_lgK_4wEEwFG4xTpx3yIDihIbNciScA_917kvLu02ZddyzR4Zp9IaIdCc8zhupYuPNgG41sNPb-y9s0a9sBMJOcg3q9_vzyMwizLY3Zk"
         }
+    },
+    "cache_response": {
+        "status": 200,
+        "plaintext": "{\"protocol\":1,\"region\":\"stats\",\"version\":\"q1w2e3r4t5y6u7i8\",\"made_at\":1767225601234,\"max_age\":60,\"fragment\":{\"type\":\"text\",\"props\":{\"text\":\"Shuffled 4\"}}}",
+        "created": 1767225602,
+        "salt": "Q2FjaGVJbnZhbGlkYXRlMQ",
+        "cache": "invalidate",
+        "expected": {
+            "headers": {
+                "content-type": "application/json",
+                "content-encoding": "aes128gcm",
+                "asgard-content-coding": "identity",
+                "content-digest": "sha-256=:CuLxAuWQQhzSGF1IYvUGqmi5XGTM2jrZCbGVjXVspZg=:",
+                "asgard-protocol": "1",
+                "asgard-cache": "invalidate",
+                "signature-input": "asgard=(\"@status\" \"content-type\" \"content-encoding\" \"asgard-content-coding\" \"content-digest\" \"asgard-protocol\" \"asgard-cache\" \"signature\";req;key=\"asgard\");created=1767225602;keyid=\"aW50ZXJvcC1zZXNzaW9uLTAx\";alg=\"hmac-sha256\";tag=\"asgard/1\"",
+                "signature": "asgard=:++FC8XsVwJ3p9MD2rX+f9XJ97EgjFixneAfx2Q6sPrU=:"
+            },
+            "body": "Q2FjaGVJbnZhbGlkYXRlMQAAEAAYYVc1MFpYSnZjQzF6WlhOemFXOXVMVEF4j2tKhejeBo9UJJcm_pBh_90LOQN_5zy0ehOnIbde33E4_DS5PLfhunOwZa6p_VqoJWqkt4KuzP6wtA7rw73BaPF0fMNLxUGiPnp-gtPixiJnIivdq5MUzCRNwN5RlcDfQIH2hab6JpE1USn1_Rszev_7zQtQByLT6sQ4vA8sb2-93krNPrxPlkqqqyxORuFahiYEAoytMxbOaO2JtahnFyx-jjAZ3sQrOmPX",
+            "signature_base": "\"@status\": 200\n\"content-type\": application/json\n\"content-encoding\": aes128gcm\n\"asgard-content-coding\": identity\n\"content-digest\": sha-256=:CuLxAuWQQhzSGF1IYvUGqmi5XGTM2jrZCbGVjXVspZg=:\n\"asgard-protocol\": 1\n\"asgard-cache\": invalidate\n\"signature\";req;key=\"asgard\": :QYEpe5VDsU+7U53l9JRunxL9sm+lYG1f+yi8fUfyTHU=:\n\"@signature-params\": (\"@status\" \"content-type\" \"content-encoding\" \"asgard-content-coding\" \"content-digest\" \"asgard-protocol\" \"asgard-cache\" \"signature\";req;key=\"asgard\");created=1767225602;keyid=\"aW50ZXJvcC1zZXNzaW9uLTAx\";alg=\"hmac-sha256\";tag=\"asgard/1\""
+        }
     }
 }

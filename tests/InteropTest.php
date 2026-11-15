@@ -3,6 +3,7 @@
 use Native\Api\Client\Asgard\Security\Base64Url;
 use Native\Api\Client\Asgard\Security\Ecdh;
 use Native\Api\Client\Asgard\Security\Gzip;
+use Native\Api\Client\Asgard\Security\SecurityException;
 use Native\Api\Client\Asgard\Security\SessionKeys;
 use Native\Api\Client\Asgard\Security\StructuredFields;
 use Native\Api\Client\Asgard\Security\Wire;
@@ -123,4 +124,31 @@ it('gzips a large stream event byte for byte and opens it', function () {
         ->and(json_decode($data, true)['enc'])->toBe('gzip')
         ->and(Wire::eventBase($streamSignature, $g['id'], $g['event'], 'gzip', json_decode($data, true)['body']))->toBe($g['expected']['signature_base'])
         ->and(Wire::openEvent($this->keys, $this->session, $streamSignature, $g['id'], $g['event'], $g['expected']['data']))->toBe($g['plaintext']);
+});
+
+it('signs Asgard-Cache on a response byte for byte, and refuses it unsigned', function () {
+    $c = $this->v['cache_response'];
+    $requestSignature = ($this->b)($this->v['request']['expected']['signature']);
+    $sealed = Wire::sealResponse($this->keys, $this->session, $c['status'], $c['plaintext'], $requestSignature, $c['created'], ($this->b)($c['salt']), false, $c['cache']);
+
+    expect($sealed['headers'])->toBe($c['expected']['headers'])
+        ->and($sealed['headers']['asgard-cache'])->toBe('invalidate')
+        ->and(Base64Url::encode($sealed['body']))->toBe($c['expected']['body']);
+
+    $input = StructuredFields::parseDictionary($c['expected']['headers']['signature-input'])['asgard'];
+    [, $base] = Wire::signatureBase($input['value'], $input['params'], fn ($name) => match ($name) {
+        '@status' => (string) $c['status'],
+        'signature' => ':'.base64_encode($requestSignature).':',
+        default => $c['expected']['headers'][$name],
+    });
+
+    expect($base)->toBe($c['expected']['signature_base'])
+        ->and(Wire::openResponse($this->keys, $this->session, $c['status'], $c['expected']['headers'], ($this->b)($c['expected']['body']), $requestSignature, $c['created']))
+        ->toBe($c['plaintext']);
+
+    $stripped = $c['expected']['headers'];
+    unset($stripped['asgard-cache']);
+
+    expect(fn () => Wire::openResponse($this->keys, $this->session, $c['status'], $stripped, ($this->b)($c['expected']['body']), $requestSignature, $c['created']))
+        ->toThrow(SecurityException::class);
 });

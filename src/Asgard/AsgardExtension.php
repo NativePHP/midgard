@@ -22,6 +22,8 @@ use Native\Mobile\Edge\Transition;
  *   fragments (protocol §3).
  * - A fragment that landed without an event wakes the loop to paint it,
  *   and Asgard's timers wake it when they come due (nextWake, tick).
+ * - A fragment that replaces a cached copy waits one turn, so the
+ *   screen's RegionCacheInvalidation listeners can keep the copy (tick).
  * - A `#[Server]` answer arrives as a native event the loop is already
  *   waiting on, and is claimed here before any listener sees it.
  * - A tap inside a fragment resolves in that region's own callback
@@ -80,7 +82,11 @@ class AsgardExtension extends RunloopExtensionBase
             return false;
         }
 
-        $acted = ServerRegion::expire($tree);
+        // Fragments held for RegionCacheInvalidation. The screen's #[On]
+        // listeners ran at the top of this turn, so every one has decided.
+        $acted = ServerRegion::settle();
+
+        $acted = ServerRegion::expire($tree) || $acted;
 
         // A server screen that gave up has left, and its calls with it.
         if (! ($tree[0] ?? null)?->hasNavigationIntent()) {

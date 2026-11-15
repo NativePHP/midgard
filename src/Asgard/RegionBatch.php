@@ -46,6 +46,8 @@ final class RegionBatch
             'component' => $first->component,
             'regions' => $this->regions(),
             'state' => $first->state,
+            ...($first->cache === [] ? [] : ['cache' => $first->cache]),
+            ...($first->reason === null ? [] : ['reason' => $first->reason]),
         ];
     }
 }

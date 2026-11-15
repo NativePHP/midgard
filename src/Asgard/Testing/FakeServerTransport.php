@@ -236,7 +236,7 @@ class FakeServerTransport implements ServerTransport, UploadTransport
      * and `$refresh` a list of `{component, region?}` hints, as the server
      * sends them.
      */
-    public function payload(?string $id = null, array $delta = [], array $fragments = [], array $refresh = []): array
+    public function payload(?string $id = null, array $delta = [], array $fragments = [], array $refresh = [], bool $invalidate = false): array
     {
         return array_filter([
             'id' => $this->resolveId($id),
@@ -244,7 +244,8 @@ class FakeServerTransport implements ServerTransport, UploadTransport
             'delta' => $delta,
             'fragments' => $fragments,
             'refresh' => $refresh,
-        ], fn ($value) => $value !== []);
+            'invalidate' => $invalidate,
+        ], fn ($value) => $value !== [] && $value !== false);
     }
 
     public function failurePayload(?string $id = null, string $error = 'The server could not be reached.', int|string|null $code = null): array
@@ -258,9 +259,9 @@ class FakeServerTransport implements ServerTransport, UploadTransport
     }
 
     /** Answer a request successfully, through the delivery path. */
-    public function resolve(?string $id = null, array $delta = [], array $fragments = [], array $refresh = []): bool
+    public function resolve(?string $id = null, array $delta = [], array $fragments = [], array $refresh = [], bool $invalidate = false): bool
     {
-        return ServerMethods::deliver($this->payload($id, $delta, $fragments, $refresh));
+        return ServerMethods::deliver($this->payload($id, $delta, $fragments, $refresh, $invalidate));
     }
 
     /** Fail a request, through the delivery path. */

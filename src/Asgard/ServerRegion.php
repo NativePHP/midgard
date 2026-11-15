@@ -4,6 +4,7 @@ namespace Native\Api\Client\Asgard;
 
 use Illuminate\Support\Carbon;
 use Native\Api\Client\Asgard\Contracts\FragmentSource;
+use Native\Api\Client\Asgard\Events\RegionCacheInvalidation;
 use Native\Api\Client\Asgard\Events\ServerActionFailed;
 use Native\Api\Client\Asgard\Events\ServerRegionFailed;
 use Native\Mobile\Edge\NativeComponent;
@@ -84,6 +85,24 @@ use Native\Mobile\System;
  * through signal(), which fetches it again, or for a shared region hands
  * over the fragment itself through push(). Both name the subscription's
  * address and state.
+ *
+ * ## The region cache
+ *
+ * With a TTL above 0 (`midgard.asgard.cache.ttl`, or `cacheTtl:` on the
+ * directive) each fragment that lands is also stored in RegionCache. A
+ * region that has nothing to paint yet paints the stored copy for its
+ * address and state at once, even an expired one, and still asks the
+ * server. Every request declares the copies still within their TTL in its
+ * `cache` member. The server answers `{"cached": true}` for a copy it holds
+ * good, which keeps what is painted and counts as a good answer.
+ *
+ * A copy painted from the cache is not an answer: the region is not put on
+ * the push stream until the server has answered for it.
+ *
+ * A response with a signed `Asgard-Cache: invalidate` redraws every region
+ * it carries. A region that holds a cached copy fires RegionCacheInvalidation
+ * first, and its fragment waits for the screen's next turn, so an `#[On]`
+ * listener can tell the client to keep the copy (settle()).
  *
  * ## Timeouts and failures
  *
@@ -192,8 +211,9 @@ class ServerRegion
     /**
      * Regions refreshServerRegions() asked to fetch again after the next
      * frame: `owner => [region => true]`, or `owner => ['*' => true]`.
+     * The value is `push` instead of true when a push signal made the mark.
      *
-     * @var \WeakMap<NativeComponent, array<string, true>>|null
+     * @var \WeakMap<NativeComponent, array<string, true|string>>|null
      */
     protected static ?\WeakMap $refreshing = null;
 
@@ -239,6 +259,9 @@ class ServerRegion
 
     public const MAX_REGIONS = 16;
 
+    /** The `reason` of a fetch a push stream signal caused. */
+    public const PUSH = 'push';
+
     /** Why a request failed: no answer in time. */
     public const TIMEOUT = 'timeout';
 
@@ -262,6 +285,32 @@ class ServerRegion
     protected static ?\WeakMap $awaiting = null;
 
     /**
+     * The `cacheTtl:` each owner's regions were drawn with:
+     * `owner => [region => ?seconds]`, null meaning the config default.
+     *
+     * @var \WeakMap<NativeComponent, array<string, ?int>>|null
+     */
+    protected static ?\WeakMap $cacheTtls = null;
+
+    /**
+     * What each owner's regions show, as far as the cache is concerned:
+     * `owner => [region => ['made_at' => ?ms, 'cached' => bool]]`. `cached`
+     * is true while the fragment came from the cache and the server has not
+     * answered for it yet.
+     *
+     * @var \WeakMap<NativeComponent, array<string, array{made_at: ?int, cached: bool}>>|null
+     */
+    protected static ?\WeakMap $copies = null;
+
+    /**
+     * Fragments that replace a cached copy, held until the screen's next
+     * turn so RegionCacheInvalidation listeners can keep the copy.
+     *
+     * @var list<array{owner: \WeakReference<NativeComponent>, region: string, id: string, request: ?RegionRequest, state: array, tree: array|string, chrome: ?array, version: ?string, made_at: ?int, max_age: ?int, event: RegionCacheInvalidation}>
+     */
+    protected static array $held = [];
+
+    /**
      * Failed actions and regions waiting for their component's next turn.
      *
      * @var list<array{owner: \WeakReference<NativeComponent>, event: ServerActionFailed|ServerRegionFailed}>
@@ -283,11 +332,22 @@ class ServerRegion
      * their placeholders while the first region still works. That is the
      * same "loud in debug, degrade in production" trade §5.3 makes for
      * prop drift.
+     *
+     * `$cacheTtl` is the region's TTL in the region cache, in seconds:
+     * `@server('stats', cacheTtl: 300)`. Null uses `midgard.asgard.cache.ttl`
+     * and 0 turns caching off for this region. A region with nothing to
+     * paint yet paints its cached copy, when there is one.
      */
-    public static function open(string $name, array $attrs = []): bool
+    public static function open(string $name, array $attrs = [], ?int $cacheTtl = null): bool
     {
         $owner = NativeElementCollector::owner();
         $name = static::deduplicate($name, $owner);
+
+        if ($owner !== null) {
+            $ttls = static::cacheTtls()[$owner] ?? [];
+            $ttls[$name] = $cacheTtl;
+            static::cacheTtls()[$owner] = $ttls;
+        }
 
         // Extra attrs are the author's (`@server('x', ['class' => '…'])`),
         // but the name and the key it derives are not theirs to override.
@@ -298,10 +358,15 @@ class ServerRegion
 
         $fragment = static::fragmentFor($name, $owner);
 
+        if ($fragment === null && $owner !== null) {
+            $fragment = static::paintFromCache($name, $owner);
+        }
+
         static::$frame[] = [
             'name' => $name,
             'key_path' => static::keyPath($name),
             'has_fragment' => $fragment !== null,
+            'from_cache' => $owner !== null && ((static::copies()[$owner] ?? [])[$name]['cached'] ?? false),
             'owner' => $owner !== null ? \WeakReference::create($owner) : null,
         ];
 
@@ -441,8 +506,14 @@ class ServerRegion
      * (see failed()). For a server screen's body, or an action, that is all
      * that happens. Any other region also throws with `app.debug` on, as
      * applyFragment() does.
+     *
+     * `$madeAt` and `$maxAge` are the server's `made_at` and `max_age` for
+     * the fragment. With both a TTL and a `made_at` it is stored in the
+     * region cache. `$invalidate` is the response's `Asgard-Cache:
+     * invalidate`: a region that holds a cached copy then fires
+     * RegionCacheInvalidation, and its fragment waits for settle().
      */
-    public static function deliver(RegionRequest $request, array|string $tree, ?array $chrome = null, ?string $version = null, array $fragments = [], array $refresh = []): bool
+    public static function deliver(RegionRequest $request, array|string $tree, ?array $chrome = null, ?string $version = null, array $fragments = [], array $refresh = [], ?int $madeAt = null, ?int $maxAge = null, bool $invalidate = false): bool
     {
         $entry = static::$pending[$request->id] ?? null;
 
@@ -466,10 +537,10 @@ class ServerRegion
         // They are applied after the action's own fragment, whatever
         // became of it, and each one is checked on its own.
         try {
-            return static::deliverTo($owner, $entry, $request, $tree, $chrome, $version);
+            return static::deliverTo($owner, $entry, $request, $tree, $chrome, $version, $madeAt, $maxAge, $invalidate);
         } finally {
             if ($fragments !== []) {
-                static::paintInline($owner, $request->id, $fragments, $request->state);
+                static::paintInline($owner, $request->id, $fragments, $request->state, $invalidate);
             }
 
             if ($refresh !== []) {
@@ -483,7 +554,7 @@ class ServerRegion
      *
      * @param  array{owner: \WeakReference<NativeComponent>, region: string}  $entry
      */
-    protected static function deliverTo(NativeComponent $owner, array $entry, RegionRequest $request, array|string $tree, ?array $chrome, ?string $version): bool
+    protected static function deliverTo(NativeComponent $owner, array $entry, RegionRequest $request, array|string $tree, ?array $chrome, ?string $version, ?int $madeAt = null, ?int $maxAge = null, bool $invalidate = false): bool
     {
         $latest = (static::requested()[$owner] ?? [])[$entry['region']] ?? null;
 
@@ -495,18 +566,32 @@ class ServerRegion
             return false;
         }
 
+        if ($invalidate && static::hold($owner, $entry['region'], $request->id, $request, $request->state, $tree, $chrome, $version, $madeAt, $maxAge)) {
+            return true;
+        }
+
+        return static::applyAnswer($owner, $entry['region'], $request, $tree, $chrome, $version, $madeAt, $maxAge);
+    }
+
+    /**
+     * Paint an answer to a request that was the region's latest, store it,
+     * and put the region on the push stream. A fragment that cannot be
+     * rendered fails the request instead.
+     */
+    protected static function applyAnswer(NativeComponent $owner, string $region, RegionRequest $request, array|string $tree, ?array $chrome, ?string $version, ?int $madeAt, ?int $maxAge): bool
+    {
         $rejected = null;
 
         try {
-            $applied = static::applyFragment($entry['region'], $tree, $owner);
+            $applied = static::applyFragment($region, $tree, $owner);
         } catch (\RuntimeException $e) {
             $applied = false;
             $rejected = $e;
         }
 
         if (! $applied) {
-            $handled = static::fail($owner, $entry['region'], $request, self::INVALID, null, $rejected?->getMessage() ?? 'the fragment cannot be rendered');
-            $quiet = $handled && ($request instanceof ActionRequest || static::isScreenBody($owner, $entry['region']));
+            $handled = static::fail($owner, $region, $request, self::INVALID, null, $rejected?->getMessage() ?? 'the fragment cannot be rendered');
+            $quiet = $handled && ($request instanceof ActionRequest || static::isScreenBody($owner, $region));
 
             // In debug a region's fragment the client cannot render is a
             // mismatch worth hearing about, as applyFragment() says, even
@@ -520,7 +605,103 @@ class ServerRegion
         }
 
         static::applyChrome($owner, $chrome);
-        static::answer($owner, $entry['region'], $request->state, $version);
+        static::answer($owner, $region, $request->state, $version);
+        static::remember($owner, $region, $request->state, $tree, $chrome, $version, $madeAt, $maxAge);
+
+        return true;
+    }
+
+    /**
+     * The server said the copy the request declared is still good
+     * (`{"cached": true}`): the seam a FragmentSource calls in place of
+     * deliver() for such an answer.
+     *
+     * The region keeps what it shows, or paints the stored copy for the
+     * request's state when it shows something else. The entry is kept as it
+     * is, since the server's `made_at` is unchanged. It is a good answer: a
+     * server screen stops waiting, and the region goes on the push stream
+     * with the stored version token.
+     *
+     * When the device no longer holds the copy (flushed since), the request
+     * fails with reason `invalid`. `$fragments` and `$refresh` are handled
+     * as for deliver(). Returns whether the region kept or painted a copy.
+     */
+    public static function deliverCached(RegionRequest $request, array $fragments = [], array $refresh = [], bool $invalidate = false): bool
+    {
+        $entry = static::$pending[$request->id] ?? null;
+
+        if ($entry === null) {
+            NativeRouter::debugLog("Asgard: cached answer for request [{$request->id}] is not one in flight — dropped.");
+
+            return false;
+        }
+
+        $owner = $entry['owner']->get();
+
+        if ($owner === null) {
+            unset(static::$pending[$request->id]);
+
+            return false;
+        }
+
+        try {
+            if (((static::requested()[$owner] ?? [])[$entry['region']] ?? null) !== $request->id) {
+                unset(static::$pending[$request->id]);
+                NativeRouter::debugLog("Asgard: cached answer for [{$request->region}] was superseded by a newer request — dropped.");
+
+                return false;
+            }
+
+            unset(static::$pending[$request->id]);
+
+            if (static::keepCached($owner, $entry['region'], $request->state)) {
+                return true;
+            }
+
+            static::fail($owner, $entry['region'], $request, self::INVALID, null, 'the server said the cached copy is good, and the device holds none');
+
+            return false;
+        } finally {
+            if ($fragments !== []) {
+                static::paintInline($owner, $request->id, $fragments, $request->state, $invalidate);
+            }
+
+            if ($refresh !== []) {
+                static::hints($refresh);
+            }
+        }
+    }
+
+    /**
+     * Keep, or paint, the stored copy of a region the server answered
+     * `cached` for, and count it as answered. False when there is no copy.
+     */
+    protected static function keepCached(NativeComponent $owner, string $region, array $state): bool
+    {
+        $stored = RegionCache::get(RegionCache::key(ComponentAddress::for($owner), $region, $state));
+
+        if ($stored === null) {
+            return false;
+        }
+
+        $shown = (static::copies()[$owner] ?? [])[$region] ?? null;
+
+        if (($shown['made_at'] ?? null) !== $stored['made_at'] || ! static::hasFragment($region, $owner)) {
+            try {
+                if (! static::applyFragment($region, $stored['fragment'], $owner)) {
+                    return false;
+                }
+            } catch (\RuntimeException) {
+                return false;
+            }
+
+            static::applyChrome($owner, $stored['chrome']);
+        } elseif ($owner instanceof ServerScreen && $region === ServerScreen::REGION) {
+            unset(static::awaiting()[$owner]);
+        }
+
+        static::setCopy($owner, $region, $stored['made_at'], false);
+        static::answer($owner, $region, $state, $stored['version']);
 
         return true;
     }
@@ -603,7 +784,7 @@ class ServerRegion
      */
     public static function hasDeadlines(): bool
     {
-        if (static::$failures !== [] || (static::$awaiting !== null && count(static::$awaiting) > 0)) {
+        if (static::$failures !== [] || static::$held !== [] || (static::$awaiting !== null && count(static::$awaiting) > 0)) {
             return true;
         }
 
@@ -627,7 +808,10 @@ class ServerRegion
     public static function nextDeadline(iterable $owners): ?float
     {
         $mine = static::idsOf($owners);
-        $next = null;
+
+        // A fragment held for RegionCacheInvalidation settles on the next
+        // turn, whichever screen takes it.
+        $next = static::$held === [] ? null : static::now();
 
         foreach (static::awaiting() as $screen => $wait) {
             if (isset($mine[spl_object_id($screen)])) {
@@ -834,7 +1018,7 @@ class ServerRegion
      * rides along as for deliver(), and `$version` becomes the token each
      * painted instance holds for the region.
      */
-    public static function push(string $component, array $state, string $region, array|string $tree, ?array $chrome = null, ?string $version = null): int
+    public static function push(string $component, array $state, string $region, array|string $tree, ?array $chrome = null, ?string $version = null, ?int $madeAt = null, ?int $maxAge = null): int
     {
         $painted = 0;
 
@@ -842,6 +1026,7 @@ class ServerRegion
             if (static::applyFragment($region, $tree, $owner)) {
                 static::applyChrome($owner, $chrome);
                 static::answer($owner, $region, $state, $version);
+                static::remember($owner, $region, $state, $tree, $chrome, $version, $madeAt, $maxAge);
                 $painted++;
             }
         }
@@ -873,7 +1058,7 @@ class ServerRegion
                 continue;
             }
 
-            static::refresh($owner, $region);
+            static::refresh($owner, $region, push: true);
             $stale++;
         }
 
@@ -967,11 +1152,16 @@ class ServerRegion
      * chrome and version included, and it supersedes any older request for
      * it still in flight. Nothing fires for a part that is refused.
      *
+     * A part may be `{cached: true}`: the copy the request declared is still
+     * good, so the stored copy stays or is painted, as deliverCached() does.
+     * With `$invalidate`, a part for a region that holds a cached copy fires
+     * RegionCacheInvalidation and waits for settle(), as deliver() says.
+     *
      * Returns `region => why` for each part that was not painted.
      *
      * @return array<string, string>
      */
-    public static function paintInline(NativeComponent $owner, string $id, array $fragments, array $state): array
+    public static function paintInline(NativeComponent $owner, string $id, array $fragments, array $state, bool $invalidate = false): array
     {
         $refused = [];
         $sequence = static::sequenceOf($id);
@@ -979,13 +1169,39 @@ class ServerRegion
         foreach ($fragments as $region => $part) {
             $region = (string) $region;
             $latest = (static::requested()[$owner] ?? [])[$region] ?? null;
+            $cached = is_array($part) && ! array_key_exists('fragment', $part) && ($part['cached'] ?? null) === true;
 
             $reason = match (true) {
-                ! is_array($part) || ! array_key_exists('fragment', $part) || ! (is_array($part['fragment']) || is_string($part['fragment'])) => 'it is not a fragment',
+                ! $cached && (! is_array($part) || ! array_key_exists('fragment', $part) || ! (is_array($part['fragment']) || is_string($part['fragment']))) => 'it is not a fragment',
                 $latest === null => 'this component never drew it',
                 $latest !== $id && static::sequenceOf($latest) > $sequence => 'a newer request for it went out',
                 default => null,
             };
+
+            if ($reason === null && $cached) {
+                if (static::keepCached($owner, $region, $state)) {
+                    $requested = static::requested()[$owner];
+                    $requested[$region] = $id;
+                    static::requested()[$owner] = $requested;
+
+                    continue;
+                }
+
+                $reason = 'the server said the cached copy is good, and the device holds none';
+            }
+
+            $madeAt = is_int($part['made_at'] ?? null) ? $part['made_at'] : null;
+            $maxAge = is_int($part['max_age'] ?? null) ? $part['max_age'] : null;
+            $chrome = is_array($part['chrome'] ?? null) ? $part['chrome'] : null;
+            $version = is_string($part['version'] ?? null) ? $part['version'] : null;
+
+            if ($reason === null && $invalidate && static::hold($owner, $region, $id, null, $state, $part['fragment'], $chrome, $version, $madeAt, $maxAge)) {
+                $requested = static::requested()[$owner];
+                $requested[$region] = $id;
+                static::requested()[$owner] = $requested;
+
+                continue;
+            }
 
             if ($reason === null) {
                 try {
@@ -1006,8 +1222,9 @@ class ServerRegion
             $requested[$region] = $id;
             static::requested()[$owner] = $requested;
 
-            static::applyChrome($owner, is_array($part['chrome'] ?? null) ? $part['chrome'] : null);
-            static::answer($owner, $region, $state, is_string($part['version'] ?? null) ? $part['version'] : null);
+            static::applyChrome($owner, $chrome);
+            static::answer($owner, $region, $state, $version);
+            static::remember($owner, $region, $state, $part['fragment'], $chrome, $version, $madeAt, $maxAge);
         }
 
         return $refused;
@@ -1021,15 +1238,24 @@ class ServerRegion
      * In debug, a fragment that cannot be rendered still throws as
      * deliver() does, once every region has been handled.
      *
-     * @param  array<string, mixed>  $fragments  `{region: {fragment, version?, chrome?}}`
+     * A part may be `{cached: true}`, which goes through deliverCached().
+     * `$invalidate` is the response's `Asgard-Cache: invalidate`.
+     *
+     * @param  array<string, mixed>  $fragments  `{region: {fragment, version?, chrome?, made_at?, max_age?}}`
      */
-    public static function deliverBatch(RegionBatch $batch, array $fragments): int
+    public static function deliverBatch(RegionBatch $batch, array $fragments, bool $invalidate = false): int
     {
         $painted = 0;
         $thrown = null;
 
         foreach ($batch->requests as $request) {
             $part = $fragments[$request->region] ?? null;
+
+            if (is_array($part) && ! array_key_exists('fragment', $part) && ($part['cached'] ?? null) === true) {
+                $painted += static::deliverCached($request) ? 1 : 0;
+
+                continue;
+            }
 
             if (! is_array($part) || ! array_key_exists('fragment', $part) || ! (is_array($part['fragment']) || is_string($part['fragment']))) {
                 static::failed($request, self::INVALID, null, 'the answer has no fragment for this region');
@@ -1043,6 +1269,9 @@ class ServerRegion
                     $part['fragment'],
                     is_array($part['chrome'] ?? null) ? $part['chrome'] : null,
                     is_string($part['version'] ?? null) ? $part['version'] : null,
+                    madeAt: is_int($part['made_at'] ?? null) ? $part['made_at'] : null,
+                    maxAge: is_int($part['max_age'] ?? null) ? $part['max_age'] : null,
+                    invalidate: $invalidate,
                 ) ? 1 : 0;
             } catch (\RuntimeException $e) {
                 $thrown ??= $e;
@@ -1309,22 +1538,26 @@ class ServerRegion
             $name = $record['name'];
             $refreshing = static::refreshing()[$owner] ?? [];
             $asked = isset($refreshing['*']) || isset($refreshing[$name]);
+            $push = ($refreshing[$name] ?? null) === self::PUSH || ($refreshing['*'] ?? null) === self::PUSH;
 
-            if (! $asked && ($record['has_fragment'] || isset((static::requested()[$owner] ?? [])[$name]))) {
+            // A copy painted from the cache still asks: the server decides
+            // whether it is good.
+            if (! $asked && (($record['has_fragment'] && ! $record['from_cache']) || isset((static::requested()[$owner] ?? [])[$name]))) {
                 continue;
             }
 
             unset($refreshing[$name]);
             static::refreshing()[$owner] = $refreshing;
 
-            $key = spl_object_id($owner);
-            $wanted[$key] ??= ['owner' => $owner, 'regions' => []];
+            // A fetch a push signal caused says so, so it goes in a request of its own.
+            $key = spl_object_id($owner).($push ? '|push' : '');
+            $wanted[$key] ??= ['owner' => $owner, 'regions' => [], 'push' => $push];
             $wanted[$key]['regions'][$name] = $name;
         }
 
         // One request per component instance, however many regions it wants.
         foreach ($wanted as $want) {
-            static::request($want['owner'], array_values($want['regions']));
+            static::request($want['owner'], array_values($want['regions']), $want['push'] ? self::PUSH : null);
         }
 
         // A refresh of everything covers this frame's regions only.
@@ -1355,11 +1588,17 @@ class ServerRegion
      * Deferred to the end of the frame rather than sent now, so the
      * request carries the state the calling action leaves behind, not
      * the state halfway through it.
+     *
+     * `$push` marks a fetch a push stream signal caused. Its request
+     * carries `"reason": "push"`, also when it goes out later because the
+     * screen was covered when the signal came. Once a push has marked a
+     * region, other marks before the fetch leave that reason in place.
      */
-    public static function refresh(NativeComponent $owner, ?string $region = null): void
+    public static function refresh(NativeComponent $owner, ?string $region = null, bool $push = false): void
     {
         $refreshing = static::refreshing()[$owner] ?? [];
-        $refreshing[$region ?? '*'] = true;
+        $key = $region ?? '*';
+        $refreshing[$key] = $push || ($refreshing[$key] ?? null) === self::PUSH ? self::PUSH : true;
         static::refreshing()[$owner] = $refreshing;
     }
 
@@ -1392,7 +1631,14 @@ class ServerRegion
             static::requestedStates()[$owner],
             static::answered()[$owner],
             static::awaiting()[$owner],
+            static::cacheTtls()[$owner],
+            static::copies()[$owner],
         );
+
+        static::$held = array_values(array_filter(
+            static::$held,
+            fn (array $held) => ! in_array($held['owner']->get(), [null, $owner], true),
+        ));
 
         static::$failures = array_values(array_filter(
             static::$failures,
@@ -1442,14 +1688,17 @@ class ServerRegion
      */
     public static function action(NativeComponent $owner, string $region, string $call, array $args): ActionRequest
     {
+        $state = static::stateOf($owner);
+
         $request = new ActionRequest(
             id: 'action-'.(++static::$sequence),
             component: ComponentAddress::for($owner),
             region: $region,
-            state: static::stateOf($owner),
+            state: $state,
             call: $call,
             args: array_values($args),
             componentClass: $owner::class,
+            cache: static::declaredCache($owner, $state),
         );
 
         $seconds = static::actionTimeout($owner);
@@ -1486,6 +1735,9 @@ class ServerRegion
         static::$watching = [];
         static::$awaiting = null;
         static::$failures = [];
+        static::$cacheTtls = null;
+        static::$copies = null;
+        static::$held = [];
     }
 
     /**
@@ -1501,6 +1753,311 @@ class ServerRegion
         }
 
         return array_filter(ComponentState::of($component), static::jsonSafe(...));
+    }
+
+    // ── The region cache ────────────────────────────
+
+    /**
+     * The TTL in seconds a region of this component is cached for: its
+     * `cacheTtl:` when it set one, or `midgard.asgard.cache.ttl`. A server
+     * screen's body always uses the config. 0 is off.
+     */
+    public static function cacheTtl(NativeComponent $owner, string $region): int
+    {
+        $ttl = static::isScreenBody($owner, $region) ? null : ((static::cacheTtls()[$owner] ?? [])[$region] ?? null);
+
+        return $ttl === null ? RegionCache::defaultTtl() : RegionCache::clamp($ttl);
+    }
+
+    /**
+     * The `cache` member for a request from this component with this state:
+     * `{region: {made_at, ttl}}` for each region it drew whose stored copy
+     * is still within its TTL by the device's clock. An expired copy is not
+     * declared, though it may be on screen.
+     *
+     * @return array<string, array{made_at: int, ttl: int}>
+     */
+    public static function declaredCache(NativeComponent $owner, array $state): array
+    {
+        $declared = [];
+        $now = static::now();
+        $address = ComponentAddress::for($owner);
+
+        foreach (array_keys(static::cacheTtls()[$owner] ?? []) as $region) {
+            $region = (string) $region;
+            $ttl = str_contains($region, '#') ? 0 : static::cacheTtl($owner, $region);
+
+            if ($ttl <= 0) {
+                continue;
+            }
+
+            $stored = RegionCache::get(RegionCache::key($address, $region, $state));
+
+            if ($stored === null) {
+                continue;
+            }
+
+            $ttl = RegionCache::effectiveTtl($ttl, $stored['max_age']);
+            $age = $now - $stored['stored_at'];
+
+            if ($ttl > 0 && $age >= 0 && $age < $ttl * 1000) {
+                $declared[$region] = ['made_at' => $stored['made_at'], 'ttl' => $ttl];
+            }
+
+            if (count($declared) >= RegionCache::MAX_DECLARED) {
+                break;
+            }
+        }
+
+        return $declared;
+    }
+
+    /**
+     * Whether a region of this component shows a copy from the cache that
+     * the server has not answered for yet.
+     */
+    public static function showsCachedCopy(NativeComponent $owner, string $region): bool
+    {
+        return (static::copies()[$owner] ?? [])[$region]['cached'] ?? false;
+    }
+
+    /**
+     * Apply the fragments held for RegionCacheInvalidation whose listeners
+     * have had their turn: each that was not ignored is painted and stored
+     * as any answer is. An ignored one keeps the copy on screen and in the
+     * cache, and the region still counts as answered. A fragment a newer
+     * request superseded, or whose component has gone, is dropped.
+     *
+     * Called by AsgardExtension on each turn, after the screen's `#[On]`
+     * listeners for the events fired since the last turn have run. Returns
+     * whether anything was applied or kept.
+     */
+    public static function settle(): bool
+    {
+        $held = static::$held;
+        static::$held = [];
+        $acted = false;
+
+        foreach ($held as $entry) {
+            $owner = $entry['owner']->get();
+
+            if ($owner === null || ((static::requested()[$owner] ?? [])[$entry['region']] ?? null) !== $entry['id']) {
+                continue;
+            }
+
+            $acted = true;
+
+            if ($entry['event']->ignored()) {
+                NativeRouter::debugLog("Asgard: kept the cached copy of [{$entry['region']}]: a listener ignored the invalidation.");
+
+                $shown = (static::copies()[$owner] ?? [])[$entry['region']]['made_at'] ?? null;
+                static::setCopy($owner, $entry['region'], $shown, false);
+                static::answer($owner, $entry['region'], $entry['state'], $entry['version']);
+
+                if ($owner instanceof ServerScreen && $entry['region'] === ServerScreen::REGION) {
+                    unset(static::awaiting()[$owner]);
+                }
+
+                continue;
+            }
+
+            if ($entry['request'] !== null) {
+                try {
+                    static::applyAnswer($owner, $entry['region'], $entry['request'], $entry['tree'], $entry['chrome'], $entry['version'], $entry['made_at'], $entry['max_age']);
+                } catch (\RuntimeException $e) {
+                    NativeRouter::debugLog("Asgard: fragment for region [{$entry['region']}] refused: ".$e->getMessage());
+                }
+
+                continue;
+            }
+
+            try {
+                if (! static::applyFragment($entry['region'], $entry['tree'], $owner)) {
+                    continue;
+                }
+            } catch (\RuntimeException $e) {
+                NativeRouter::debugLog("Asgard: fragment for region [{$entry['region']}] refused: ".$e->getMessage());
+
+                continue;
+            }
+
+            static::applyChrome($owner, $entry['chrome']);
+            static::answer($owner, $entry['region'], $entry['state'], $entry['version']);
+            static::remember($owner, $entry['region'], $entry['state'], $entry['tree'], $entry['chrome'], $entry['version'], $entry['made_at'], $entry['max_age']);
+        }
+
+        if ($acted) {
+            static::$repaint = true;
+        }
+
+        return $acted;
+    }
+
+    /** Whether any fragment waits for settle(). */
+    public static function hasHeld(): bool
+    {
+        return static::$held !== [];
+    }
+
+    /**
+     * Paint the stored copy of a region that has nothing yet, when caching
+     * is on for it and a copy is stored for its address and state. The
+     * copy is not an answer: the region still asks, and is not watched on
+     * the push stream until the server answers. A copy that no longer
+     * renders (the app changed) is dropped from the cache.
+     */
+    protected static function paintFromCache(string $region, NativeComponent $owner): ?array
+    {
+        if (str_contains($region, '#') || static::cacheTtl($owner, $region) <= 0) {
+            return null;
+        }
+
+        $key = RegionCache::key(ComponentAddress::for($owner), $region, static::stateOf($owner));
+        $stored = RegionCache::get($key);
+
+        if ($stored === null) {
+            return null;
+        }
+
+        // Painting a copy is part of drawing this frame, not a reason to
+        // draw another one.
+        $repaint = static::$repaint;
+
+        try {
+            $applied = static::applyFragment($region, $stored['fragment'], $owner);
+        } catch (\RuntimeException) {
+            $applied = false;
+        } finally {
+            static::$repaint = $repaint;
+        }
+
+        if (! $applied) {
+            RegionCache::forget($key);
+
+            return null;
+        }
+
+        if ($stored['chrome'] !== null && $owner instanceof ServerScreen) {
+            try {
+                $owner->receiveChrome($stored['chrome']);
+            } catch (\RuntimeException) {
+                // Chrome that no longer parses leaves the default.
+            }
+        }
+
+        static::setCopy($owner, $region, $stored['made_at'], true);
+
+        return static::fragmentFor($region, $owner);
+    }
+
+    /**
+     * Hold a fragment from an invalidating response for a region that
+     * shows or stores a cached copy, and fire RegionCacheInvalidation.
+     * False, and nothing held, when the region has no cached copy.
+     */
+    protected static function hold(NativeComponent $owner, string $region, string $id, ?RegionRequest $request, array $state, array|string $tree, ?array $chrome, ?string $version, ?int $madeAt, ?int $maxAge): bool
+    {
+        $shown = (static::copies()[$owner] ?? [])[$region] ?? null;
+        $oldMadeAt = ($shown['cached'] ?? false) ? $shown['made_at'] : null;
+
+        if ($oldMadeAt === null && static::cacheTtl($owner, $region) > 0) {
+            $oldMadeAt = RegionCache::get(RegionCache::key(ComponentAddress::for($owner), $region, $state))['made_at'] ?? null;
+        }
+
+        if ($oldMadeAt === null) {
+            return false;
+        }
+
+        $fragment = is_string($tree) ? json_decode($tree, true) : $tree;
+
+        $event = new RegionCacheInvalidation(
+            region: $region,
+            component: ComponentAddress::for($owner),
+            oldMadeAt: $oldMadeAt,
+            newMadeAt: $madeAt,
+            fragment: is_array($fragment) ? $fragment : [],
+            requestId: $id,
+        );
+
+        static::$held[] = [
+            'owner' => \WeakReference::create($owner),
+            'region' => $region,
+            'id' => $id,
+            'request' => $request,
+            'state' => $state,
+            'tree' => $tree,
+            'chrome' => $chrome,
+            'version' => $version,
+            'made_at' => $madeAt,
+            'max_age' => $maxAge,
+            'event' => $event,
+        ];
+
+        // Laravel listeners decide now. The screen's #[On] listeners run on
+        // its next turn, which settle() waits for.
+        static::fire($event);
+        static::$repaint = true;
+
+        return true;
+    }
+
+    /**
+     * Store a fragment that landed, when caching is on for its region and
+     * the server sent a `made_at`. A fragment whose effective TTL is 0 (the
+     * server's `max_age` is 0) is not stored, and drops an older copy.
+     */
+    protected static function remember(NativeComponent $owner, string $region, array $state, array|string $tree, ?array $chrome, ?string $version, ?int $madeAt, ?int $maxAge): void
+    {
+        static::setCopy($owner, $region, $madeAt, false);
+
+        $ttl = static::cacheTtl($owner, $region);
+
+        if ($ttl <= 0 || str_contains($region, '#')) {
+            return;
+        }
+
+        $key = RegionCache::key(ComponentAddress::for($owner), $region, $state);
+        $ttl = RegionCache::effectiveTtl($ttl, $maxAge);
+        $fragment = is_string($tree) ? json_decode($tree, true) : $tree;
+
+        if ($key === null) {
+            return;
+        }
+
+        if ($ttl <= 0 || $madeAt === null || ! is_array($fragment)) {
+            RegionCache::forget($key);
+
+            return;
+        }
+
+        RegionCache::put($key, [
+            'fragment' => $fragment,
+            'chrome' => $chrome,
+            'version' => $version,
+            'made_at' => $madeAt,
+            'max_age' => $maxAge,
+            'stored_at' => (int) static::now(),
+            'ttl' => $ttl,
+        ]);
+    }
+
+    protected static function setCopy(NativeComponent $owner, string $region, ?int $madeAt, bool $cached): void
+    {
+        $copies = static::copies()[$owner] ?? [];
+        $copies[$region] = ['made_at' => $madeAt, 'cached' => $cached];
+        static::copies()[$owner] = $copies;
+    }
+
+    /** @return \WeakMap<NativeComponent, array<string, ?int>> */
+    protected static function cacheTtls(): \WeakMap
+    {
+        return static::$cacheTtls ??= new \WeakMap;
+    }
+
+    /** @return \WeakMap<NativeComponent, array<string, array{made_at: ?int, cached: bool}>> */
+    protected static function copies(): \WeakMap
+    {
+        return static::$copies ??= new \WeakMap;
     }
 
     // ── Server screens (§12) ─────────────────────────
@@ -1593,9 +2150,10 @@ class ServerRegion
      *
      * @param  list<string>  $regions
      */
-    protected static function request(NativeComponent $owner, array $regions): void
+    protected static function request(NativeComponent $owner, array $regions, ?string $reason = null): void
     {
         $state = static::stateOf($owner);
+        $cache = static::declaredCache($owner, $state);
         $requests = [];
 
         foreach ($regions as $region) {
@@ -1605,6 +2163,8 @@ class ServerRegion
                 region: $region,
                 state: $state,
                 componentClass: $owner::class,
+                cache: $cache,
+                reason: $reason,
             );
 
             $seconds = static::isScreenBody($owner, $region) ? 0 : static::regionTimeout($owner);

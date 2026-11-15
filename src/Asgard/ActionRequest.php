@@ -27,8 +27,9 @@ class ActionRequest extends RegionRequest
         public readonly string $call,
         public readonly array $args = [],
         ?string $componentClass = null,
+        array $cache = [],
     ) {
-        parent::__construct($id, $component, $region, $state, $componentClass);
+        parent::__construct($id, $component, $region, $state, $componentClass, $cache);
     }
 
     /** The render body, plus the action to run before rendering. */
