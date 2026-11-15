@@ -29,6 +29,14 @@ use Native\Api\Client\Asgard\Security\Wire;
  * more try. Anything else that stops the stream drops the set until the
  * device hands over a new one.
  *
+ * When the app goes to the background the stream is closed but the set is
+ * kept, so the server frees the worker the stream holds. Nothing that
+ * happens to the stream while away drops the set or reopens it, and a set
+ * handed over while away is only recorded. When the app comes back the
+ * stream opens again at once, signed afresh, with the versions the device
+ * holds. The server then signals every region that changed while it was
+ * away, or that the device holds no version for.
+ *
  * Every event must verify against the request that opened the stream and
  * decrypt, and must name a subscription and region this stream carries,
  * before it reaches the device. One that fails is logged and dropped. A
@@ -56,6 +64,9 @@ class RegionStreams
 
     protected bool $retried = false;
 
+    /** The app is in the background, so the stream stays closed. */
+    protected bool $backgrounded = false;
+
     /**
      * @param  Closure(string $component, array $state, string $region, array $fragment, ?array $chrome, string $version, ?int $madeAt, ?int $maxAge): int  $pusher
      * @param  Closure(string $component, array $state, string $region, string $version): int  $signaller
@@ -76,16 +87,7 @@ class RegionStreams
      */
     public function watch(array $subscriptions): void
     {
-        $next = [];
-        foreach ($subscriptions as $subscription) {
-            $next[$subscription['id']] = [
-                'id' => $subscription['id'],
-                'component' => $subscription['component'],
-                'regions' => array_values($subscription['regions']),
-                'state' => $subscription['state'],
-                'versions' => $subscription['versions'] ?? [],
-            ];
-        }
+        $next = self::keyed($subscriptions);
 
         // Versions alone do not make a set different. The stream keeps its own.
         if (self::shape($next) === self::shape($this->subscriptions)) {
@@ -101,6 +103,49 @@ class RegionStreams
 
             return;
         }
+
+        $this->open();
+    }
+
+    /**
+     * The app went to the background. Close the stream so the server frees
+     * its worker, but keep the set for when the app comes back.
+     */
+    public function backgrounded(): void
+    {
+        $this->backgrounded = true;
+
+        if ($this->subscriptions === []) {
+            return;
+        }
+
+        $this->forget();
+        Stream::close(self::ID);
+    }
+
+    /**
+     * The app came back. Open the stream again straight away, with a fresh
+     * signature, a fresh native backoff and one more 419 retry.
+     *
+     * Pass the device's current set to send the versions it holds now. The
+     * set handed to watch() keeps the versions it had then, because a
+     * version moving alone is not handed over.
+     *
+     * @param  list<array{id: string, component: string, regions: list<string>, state: array, versions?: array<string, string>}>|null  $subscriptions
+     */
+    public function foregrounded(?array $subscriptions = null): void
+    {
+        $this->backgrounded = false;
+        $this->retried = false;
+
+        if ($subscriptions !== null) {
+            $this->subscriptions = self::keyed($subscriptions);
+        }
+
+        // Close first, even if the background close never got through: a
+        // fresh native session starts with no backoff, so it connects now.
+        $this->forget();
+        Stream::close(self::ID);
 
         $this->open();
     }
@@ -169,7 +214,14 @@ class RegionStreams
 
     public function closed(StreamClosed $event): void
     {
-        if ($event->id !== self::ID || $this->subscriptions === []) {
+        if ($event->id !== self::ID || $this->subscriptions === [] || $this->backgrounded) {
+            return;
+        }
+
+        // No error, no status and no reconnect is the native side owning up
+        // to a Stream::close() from here. It can land after the stream was
+        // opened again, so it must not drop the set.
+        if (! $event->reconnect && $event->error === null && $event->status === null) {
             return;
         }
 
@@ -208,7 +260,7 @@ class RegionStreams
 
     protected function open(): void
     {
-        if ($this->subscriptions === []) {
+        if ($this->subscriptions === [] || $this->backgrounded) {
             return;
         }
 
@@ -259,7 +311,8 @@ class RegionStreams
     protected function refresh(): void
     {
         $then = function (bool $ok) {
-            if ($this->subscriptions === []) {
+            // Back in the foreground, the stream opens again anyway.
+            if ($this->subscriptions === [] || $this->backgrounded) {
                 return;
             }
 
@@ -293,6 +346,26 @@ class RegionStreams
     {
         $this->session = null;
         $this->signature = null;
+    }
+
+    /**
+     * @param  list<array{id: string, component: string, regions: list<string>, state: array, versions?: array<string, string>}>  $subscriptions
+     * @return array<string, array{id: string, component: string, regions: list<string>, state: array, versions: array<string, string>}>
+     */
+    protected static function keyed(array $subscriptions): array
+    {
+        $keyed = [];
+        foreach ($subscriptions as $subscription) {
+            $keyed[$subscription['id']] = [
+                'id' => $subscription['id'],
+                'component' => $subscription['component'],
+                'regions' => array_values($subscription['regions']),
+                'state' => $subscription['state'],
+                'versions' => $subscription['versions'] ?? [],
+            ];
+        }
+
+        return $keyed;
     }
 
     /** The set without versions, for telling whether it changed. */

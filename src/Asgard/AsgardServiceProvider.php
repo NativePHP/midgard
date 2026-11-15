@@ -20,6 +20,8 @@ use Native\Mobile\AsyncTask;
 use Native\Mobile\Edge\ComponentMethodInvoker;
 use Native\Mobile\Edge\ElementRegistry;
 use Native\Mobile\Edge\NativeComponent;
+use Native\Mobile\Events\App\AppBackgrounded;
+use Native\Mobile\Events\App\AppForegrounded;
 use Native\Mobile\Events\Screen\ScreenMounted;
 use Native\Mobile\Events\Screen\ScreenResumed;
 use Native\Mobile\Events\Screen\ScreenUnmounted;
@@ -140,6 +142,12 @@ class AsgardServiceProvider extends ServiceProvider
             Event::listen(StreamMessage::class, fn (StreamMessage $event) => $streams()->receive($event));
             Event::listen(StreamOpened::class, fn (StreamOpened $event) => $streams()->opened($event));
             Event::listen(StreamClosed::class, fn (StreamClosed $event) => $streams()->closed($event));
+
+            // A suspended app's socket can be dead with nothing reported, so
+            // the stream closes in the background and opens again on return,
+            // with the versions every live region holds now.
+            Event::listen(AppBackgrounded::class, fn () => $streams()->backgrounded());
+            Event::listen(AppForegrounded::class, fn () => $streams()->foregrounded(ServerRegion::subscriptions()));
         }
     }
 

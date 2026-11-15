@@ -345,3 +345,135 @@ it('closes the stream', function () {
     $this->stream->assertClosed(ASGARD);
     expect($this->streams->subscriptions())->toBe([]);
 });
+
+it('closes the stream in the background but keeps the set', function () {
+    $this->streams->watch([sub()]);
+    $this->streams->backgrounded();
+
+    $this->stream->assertClosed(ASGARD);
+    expect($this->stream->isOpen(ASGARD))->toBeFalse()
+        ->and($this->streams->subscriptions())->toHaveKey('home');
+
+    // Events from the closed stream no longer verify against anything.
+    $this->streams->receive(new StreamMessage(ASGARD, 'fragment', 'x', '3'));
+    expect($this->pushed)->toBe([]);
+});
+
+it('does not close anything in the background when there is no set', function () {
+    $this->streams->backgrounded();
+
+    expect($this->stream->closes)->toBe([]);
+});
+
+it('opens again on return with a fresh signature and the versions held now', function () {
+    $this->streams->watch([sub(versions: ['stats' => 'v1'])]);
+    $first = $this->stream->lastOpen(ASGARD)['headers']['signature'];
+    $this->streams->backgrounded();
+
+    $this->streams->foregrounded([sub(versions: ['stats' => 'v7'])]);
+
+    expect($this->stream->opens)->toHaveCount(2)
+        ->and($this->stream->isOpen(ASGARD))->toBeTrue()
+        ->and($this->stream->lastOpen(ASGARD)['headers']['signature'])->not->toBe($first)
+        ->and(($this->opened)()['body']['subscriptions'][0]['versions'])->toBe(['stats' => 'v7']);
+
+    $this->streams->receive(($this->event)(fragmentEvent()));
+    expect($this->pushed)->toHaveCount(1);
+});
+
+it('keeps the versions it has when the return brings no set', function () {
+    $this->streams->watch([sub(versions: ['stats' => 'v1'])]);
+    $this->streams->receive(($this->event)(fragmentEvent()));
+    $this->streams->backgrounded();
+
+    $this->streams->foregrounded();
+
+    expect(($this->opened)()['body']['subscriptions'][0]['versions'])->toBe(['stats' => 'v2']);
+});
+
+it('closes the old native session before opening on return, so the backoff starts over', function () {
+    $this->streams->watch([sub()]);
+
+    // The background close never got through before the app was suspended.
+    $this->streams->foregrounded();
+
+    expect($this->stream->closes)->toBe([ASGARD])
+        ->and($this->stream->opens)->toHaveCount(2)
+        ->and($this->stream->isOpen(ASGARD))->toBeTrue();
+});
+
+it('opens nothing on return when there is no set', function () {
+    $this->streams->backgrounded();
+    $this->streams->foregrounded([]);
+
+    $this->stream->assertNothingOpened();
+});
+
+it('ignores every close of the stream while in the background', function (StreamClosed $event) {
+    $this->streams->watch([sub()]);
+    $this->streams->backgrounded();
+
+    $this->streams->closed($event);
+
+    expect($this->stream->opens)->toHaveCount(1)
+        ->and($this->server->handshakes)->toBe(1)
+        ->and($this->streams->subscriptions())->toHaveKey('home');
+
+    $this->streams->foregrounded();
+    expect($this->stream->opens)->toHaveCount(2);
+})->with([
+    'its own close' => [new StreamClosed(ASGARD)],
+    'a reconnect' => [new StreamClosed(ASGARD, 'timed out', reconnect: true)],
+    'a 419' => [new StreamClosed(ASGARD, 'HTTP 419', false, 419)],
+    'a 403' => [new StreamClosed(ASGARD, 'HTTP 403', false, 403)],
+]);
+
+it('keeps the set when the background close is reported after the return', function () {
+    $this->streams->watch([sub()]);
+    $this->streams->backgrounded();
+    $this->streams->foregrounded();
+
+    $this->streams->closed(new StreamClosed(ASGARD));
+
+    expect($this->streams->subscriptions())->toHaveKey('home')
+        ->and($this->stream->opens)->toHaveCount(2);
+});
+
+it('gives a 419 its one new handshake after the return', function () {
+    $this->streams->watch([sub()]);
+    $this->streams->closed(new StreamClosed(ASGARD, 'HTTP 419', false, 419));
+    $this->streams->backgrounded();
+    $this->streams->foregrounded();
+    $this->server->forgetSessions();
+
+    $this->streams->closed(new StreamClosed(ASGARD, 'HTTP 419', false, 419));
+
+    expect($this->server->handshakes)->toBe(3)
+        ->and($this->stream->opens)->toHaveCount(4)
+        ->and($this->streams->subscriptions())->toHaveKey('home');
+});
+
+it('only records a set handed over in the background, and opens it on return', function () {
+    $this->streams->watch([sub()]);
+    $this->streams->backgrounded();
+
+    $this->streams->watch([sub(), sub('promo', ['screen'], ['id' => '1'], [], 'promos.show')]);
+
+    expect($this->stream->opens)->toHaveCount(1)
+        ->and($this->streams->subscriptions())->toHaveKeys(['home', 'promo']);
+
+    $this->streams->foregrounded();
+
+    expect($this->stream->opens)->toHaveCount(2)
+        ->and(array_column(($this->opened)()['body']['subscriptions'], 'id'))->toBe(['home', 'promo']);
+});
+
+it('opens a set first handed over in the background on return', function () {
+    $this->streams->backgrounded();
+    $this->streams->watch([sub()]);
+
+    $this->stream->assertNothingOpened();
+
+    $this->streams->foregrounded();
+    $this->stream->assertOpened(ASGARD);
+});

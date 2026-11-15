@@ -221,6 +221,18 @@ is not keyed by headers, so a shared region must not depend on one; send it in
 headers, and anything starting `Asgard-` or `X-Asgard-`) are refused with an
 exception. A callable that gives null leaves the header out of that request.
 
+### The push stream
+
+With `stream` on, the device keeps one push stream open for every region on
+screen. Each open stream holds a PHP worker on the server.
+
+When the app goes to the background, the stream is closed so the server frees
+that worker. The device keeps its list of regions. When the app comes back,
+the stream opens again straight away with the version the device holds for
+each region. The server then signals every region that changed while the app
+was away, and every region the device holds no version for, so nothing pushed
+in the meantime is missed.
+
 ### The region cache
 
 The app can keep a copy of each region and server screen it gets, and paint
