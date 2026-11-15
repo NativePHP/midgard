@@ -7,6 +7,7 @@ use Native\Api\Client\Asgard\Contracts\FragmentSource;
 use Native\Api\Client\Asgard\Events\RegionCacheInvalidation;
 use Native\Api\Client\Asgard\Events\ServerActionFailed;
 use Native\Api\Client\Asgard\Events\ServerRegionFailed;
+use Native\Mobile\Edge\Element;
 use Native\Mobile\Edge\NativeComponent;
 use Native\Mobile\Edge\NativeElementCollector;
 use Native\Mobile\Edge\NativeRouter;
@@ -332,14 +333,42 @@ class ServerRegion
     /**
      * What patches keep per owner and region, so the next one is cheap:
      * `owner => [region => ['targets' => [key => path], 'uncached' => bool,
-     * 'stale' => bool]]`. A path is the child indexes from the region's
-     * node list down to the target. `uncached` says the region's cache
-     * entry is already dropped, and `stale` that its callback registry is
-     * rebuilt on its next render. A full fragment resets it.
+     * 'refs' => ?[expression => count], 'forget' => [expression => true]]]`.
+     * A path is the child indexes from the region's node list down to the
+     * target. `uncached` says the region's cache entry is already dropped.
+     * `refs` counts how many nodes in the held tree carry each callback,
+     * counted on the first patch, and `forget` lists the callbacks whose
+     * count a patch took to zero: the region's registry forgets them on its
+     * next render, so until then a tap on what is on screen still works. A
+     * full fragment resets it.
      *
-     * @var \WeakMap<NativeComponent, array<string, array{targets: array<string, list<int>>, uncached: bool, stale: bool}>>|null
+     * @var \WeakMap<NativeComponent, array<string, array{targets: array<string, list<int>>, uncached: bool, refs: ?array<string, int>, forget: array<string, true>}>>|null
      */
     protected static ?\WeakMap $patchState = null;
+
+    /**
+     * The elements each region last built from its held tree, so a frame
+     * puts the same instances back instead of building them again:
+     * `owner => [region => ['roots' => list<Element>, 'registry' =>
+     * FragmentCallbacks, 'reused' => WeakMap<Element, true>]]`. `roots`
+     * lines up with the region's node list, and every element below it with
+     * the node it was built from.
+     *
+     * Elements in `reused` are marked reused as built (see
+     * Element::markReusedAsBuilt()): toArray() may answer for one with a
+     * REUSE marker without walking it, so nothing under one may change. A
+     * patch therefore swaps each marked element on the path to its target
+     * for a fresh copy, marks that copy's other children instead, and then
+     * only splices the target's children: new nodes are built and marked,
+     * removed ones dropped, and the rest kept as they are.
+     *
+     * Only the Element-tree path uses this. Streaming has no elements to
+     * keep and emits the held tree every frame. A full fragment, a cleared
+     * region and a new registry each drop the entry.
+     *
+     * @var \WeakMap<NativeComponent, array<string, array{roots: list<Element>, registry: FragmentCallbacks, reused: \WeakMap<Element, true>}>>|null
+     */
+    protected static ?\WeakMap $built = null;
 
     /** At most this many nodes in one patch. */
     public const PATCH_MAX_NODES = 100;
@@ -411,11 +440,12 @@ class ServerRegion
 
         // The collector's bound registry is the owner's own, so its
         // scope is what a child's region chains in front of its own.
-        // A patched region gets a fresh registry now, so ids of nodes a
-        // patch removed stop resolving. Until this render the old one
-        // still answers taps on what is on screen.
-        $callbacks = (static::takeStaleRegistry($name, $owner) ? null : static::registryFor($name, $owner))
+        $callbacks = static::registryFor($name, $owner)
             ?? static::newRegistry($name, $owner, NativeElementCollector::callbacks()?->scope() ?? '');
+
+        // Callbacks that only nodes a patch removed carried stop resolving
+        // now. Until this render they still answer taps on what is on screen.
+        static::pruneRegistry($name, $owner, $callbacks);
 
         // Element-tree path: pinning the region node is enough. toArray()
         // resolves `ownedCallbacks` first and passes the result down, so
@@ -429,7 +459,13 @@ class ServerRegion
         NativeElementCollector::setCallbacks($callbacks);
 
         try {
-            static::emit($fragment);
+            if ($owner !== null && ! NativeElementCollector::isStreaming()) {
+                foreach (static::builtRoots($name, $owner, $fragment, $callbacks) as $root) {
+                    NativeElementCollector::attachElement($root);
+                }
+            } else {
+                static::emit($fragment);
+            }
         } finally {
             NativeElementCollector::setCallbacks($bound);
         }
@@ -500,6 +536,7 @@ class ServerRegion
             static::fragments()[$owner] = $held;
             static::dropRegistry($region, $owner);
             static::forgetPatchState($region, $owner);
+            static::dropBuilt($region, $owner);
 
             // A server screen's body has landed, so its timer is off. A
             // later answer that fails leaves this one on screen.
@@ -1282,7 +1319,7 @@ class ServerRegion
             }
         }
 
-        $state = (static::patchState()[$owner] ?? [])[$region] ?? ['targets' => [], 'uncached' => false, 'stale' => false];
+        $state = (static::patchState()[$owner] ?? [])[$region] ?? ['targets' => [], 'uncached' => false, 'refs' => null, 'forget' => []];
         $path = $state['targets'][$op['target']] ?? null;
 
         if ($path === null || ! static::pathLeadsTo($nodes, $path, $op['target'])) {
@@ -1311,6 +1348,9 @@ class ServerRegion
             }
         }
 
+        // Counted before the op, over the tree as it was.
+        $state['refs'] ??= static::countCallbacks($nodes);
+
         // Walk down to the target by reference, so only the arrays on the
         // path are copied, and swap its children.
         $list = &$nodes;
@@ -1325,8 +1365,13 @@ class ServerRegion
         }
 
         $target = &$list[$path[$last]];
-        $children = $target['children'] ?? [];
         $keep = $op['keep'] ?? null;
+
+        // Work on where each new child comes from: its index among the old
+        // children, or `n` and its index among the new nodes. The built
+        // elements and the callback counts follow the same list.
+        $old = $target['children'] ?? [];
+        $from = array_keys($old);
 
         // A full fetch can already hold an item a patch then adds (the server
         // reads the version before it renders), so an existing child with
@@ -1340,41 +1385,135 @@ class ServerRegion
             }
 
             if ($incoming !== []) {
-                $children = array_values(array_filter(
-                    $children,
-                    fn (array $child) => ! (isset($child['key']) && (is_string($child['key']) || is_int($child['key'])) && isset($incoming[(string) $child['key']])),
-                ));
+                foreach ($old as $i => $child) {
+                    if (isset($child['key']) && (is_string($child['key']) || is_int($child['key'])) && isset($incoming[(string) $child['key']])) {
+                        unset($from[$i]);
+                    }
+                }
+
+                $from = array_values($from);
             }
         }
 
-        $children = match ($op['op']) {
-            'prepend' => $keep !== null && count($add) + count($children) > $keep
-                ? array_slice([...$add, ...$children], 0, $keep)
-                : [...$add, ...$children],
-            'append' => $keep !== null && count($add) + count($children) > $keep
-                ? array_slice([...$children, ...$add], -$keep)
-                : [...$children, ...$add],
-            'remove' => array_values(array_filter(
-                $children,
-                fn (array $child) => ! (isset($child['key']) && (is_string($child['key']) || is_int($child['key'])) && isset($op['keys'][(string) $child['key']])),
-            )),
-        };
+        $new = [];
+        foreach (array_keys($add) as $j) {
+            $new[] = "n{$j}";
+        }
 
+        if ($op['op'] === 'remove') {
+            foreach ($from as $at => $i) {
+                $child = $old[$i];
+
+                if (isset($child['key']) && (is_string($child['key']) || is_int($child['key'])) && isset($op['keys'][(string) $child['key']])) {
+                    unset($from[$at]);
+                }
+            }
+
+            $from = array_values($from);
+        } else {
+            $from = $op['op'] === 'prepend' ? [...$new, ...$from] : [...$from, ...$new];
+
+            if ($keep !== null && count($from) > $keep) {
+                $from = $op['op'] === 'prepend' ? array_slice($from, 0, $keep) : array_slice($from, -$keep);
+            }
+        }
+
+        $children = [];
+        $kept = [];
+        $refs = $state['refs'];
+
+        foreach ($from as $source) {
+            if (is_int($source)) {
+                $children[] = $old[$source];
+                $kept[$source] = true;
+            } else {
+                $children[] = $child = $add[(int) substr($source, 1)];
+                static::countCallbacks([$child], $refs, 1, $state['forget']);
+            }
+        }
+
+        foreach (array_diff_key($old, $kept) as $child) {
+            static::countCallbacks([$child], $refs, -1, $state['forget']);
+        }
+
+        $state['refs'] = $refs;
+
+        $before = $all[$region];
         $target['children'] = $children;
         unset($target, $list);
 
         $all[$region] = $nodes;
         static::fragments()[$owner] = $all;
 
+        static::patchBuilt($owner, $region, $before, $path, $from, $add);
+
         // Only this target's path is still known to be right: the op may
         // have moved any other one, or put a node with its key first.
         $state['targets'] = [$op['target'] => $path];
-        $state['stale'] = true;
         $patches = static::patchState()[$owner] ?? [];
         $patches[$region] = $state;
         static::patchState()[$owner] = $patches;
 
         return null;
+    }
+
+    /**
+     * Count the callbacks a node list carries, by expression, into `$refs`
+     * (`$delta` per node). An expression a removal takes to zero goes into
+     * `$forget`, and one that comes back leaves it.
+     *
+     * @param  array<string, int>  $refs
+     * @param  array<string, true>  $forget
+     * @return array<string, int>
+     */
+    protected static function countCallbacks(array $nodes, array &$refs = [], int $delta = 1, array &$forget = []): array
+    {
+        foreach ($nodes as $node) {
+            foreach (array_keys(self::CALLBACK_ATTRS) as $slot) {
+                $callback = is_array($node[$slot] ?? null)
+                    ? FragmentCallbacks::canonical($node[$slot]['target'] ?? null, $node[$slot]['call'] ?? null, $node[$slot]['args'] ?? null)
+                    : null;
+
+                if ($callback === null) {
+                    continue;
+                }
+
+                $expression = FragmentCallbacks::expressionFor($callback);
+                $count = ($refs[$expression] ?? 0) + $delta;
+
+                if ($count > 0) {
+                    $refs[$expression] = $count;
+                    unset($forget[$expression]);
+                } else {
+                    unset($refs[$expression]);
+                    $forget[$expression] = true;
+                }
+            }
+
+            if (! empty($node['children']) && is_array($node['children'])) {
+                static::countCallbacks($node['children'], $refs, $delta, $forget);
+            }
+        }
+
+        return $refs;
+    }
+
+    /** Forget, in a region's registry, the callbacks patches took off the screen. */
+    protected static function pruneRegistry(string $region, ?NativeComponent $owner, FragmentCallbacks $registry): void
+    {
+        $forget = $owner === null ? [] : ((static::patchState()[$owner] ?? [])[$region]['forget'] ?? []);
+
+        if ($forget === []) {
+            return;
+        }
+
+        foreach (array_keys($forget) as $expression) {
+            $registry->forget($expression);
+        }
+
+        $patches = static::patchState()[$owner];
+        $patches[$region]['forget'] = [];
+        static::patchState()[$owner] = $patches;
     }
 
     /** The child indexes down to the first node, depth first, keyed `$target`. */
@@ -1434,20 +1573,6 @@ class ServerRegion
         static::patchState()[$owner] = $patches;
     }
 
-    /** Whether a region's registry is to be rebuilt, clearing the flag. */
-    protected static function takeStaleRegistry(string $region, ?NativeComponent $owner): bool
-    {
-        if ($owner === null || ! ((static::patchState()[$owner] ?? [])[$region]['stale'] ?? false)) {
-            return false;
-        }
-
-        $patches = static::patchState()[$owner];
-        $patches[$region]['stale'] = false;
-        static::patchState()[$owner] = $patches;
-
-        return true;
-    }
-
     protected static function forgetPatchState(string $region, NativeComponent $owner): void
     {
         $patches = static::patchState()[$owner] ?? null;
@@ -1460,7 +1585,7 @@ class ServerRegion
         static::patchState()[$owner] = $patches;
     }
 
-    /** @return \WeakMap<NativeComponent, array<string, array{targets: array<string, list<int>>, uncached: bool, stale: bool}>> */
+    /** @return \WeakMap<NativeComponent, array<string, array{targets: array<string, list<int>>, uncached: bool, refs: ?array<string, int>, forget: array<string, true>}>> */
     protected static function patchState(): \WeakMap
     {
         return static::$patchState ??= new \WeakMap;
@@ -1909,6 +2034,7 @@ class ServerRegion
         static::fragments()[$owner] = $held;
         static::dropRegistry($region, $owner);
         static::forgetPatchState($region, $owner);
+        static::dropBuilt($region, $owner);
     }
 
     public static function hasFragment(string $region, ?NativeComponent $owner = null): bool
@@ -2096,6 +2222,7 @@ class ServerRegion
             static::cacheTtls()[$owner],
             static::copies()[$owner],
             static::patchState()[$owner],
+            static::built()[$owner],
         );
 
         static::$held = array_values(array_filter(
@@ -2203,6 +2330,7 @@ class ServerRegion
         static::$held = [];
         static::$retries = [];
         static::$patchState = null;
+        static::$built = null;
     }
 
     /**
@@ -2940,6 +3068,173 @@ class ServerRegion
     protected static function keyPath(string $name): string
     {
         return '/'.implode('/', [...static::$open, $name]);
+    }
+
+    /**
+     * The elements a region paints: the ones it built last time, or ones
+     * built now from its held tree and kept (see $built).
+     *
+     * @return list<Element>
+     */
+    protected static function builtRoots(string $region, NativeComponent $owner, array $nodes, FragmentCallbacks $registry): array
+    {
+        $entry = (static::built()[$owner] ?? [])[$region] ?? null;
+
+        if ($entry !== null && $entry['registry'] === $registry) {
+            return $entry['roots'];
+        }
+
+        $roots = NativeElementCollector::captureRoots(fn () => static::emit($nodes));
+
+        // A node list the collector folded or split would no longer line up
+        // with the tree, and a patch could not find its way down. Paint it,
+        // but keep nothing.
+        if (count($roots) !== count($nodes)) {
+            static::dropBuilt($region, $owner);
+
+            return $roots;
+        }
+
+        $reused = new \WeakMap;
+        foreach ($roots as $root) {
+            static::markReused($root, $reused);
+        }
+
+        $held = static::built()[$owner] ?? [];
+        $held[$region] = ['roots' => $roots, 'registry' => $registry, 'reused' => $reused];
+        static::built()[$owner] = $held;
+
+        return $roots;
+    }
+
+    /**
+     * Carry a patch over to a region's built elements, if it has any.
+     * `$before` is the held tree before the op, `$path` the target's, and
+     * `$from` where each of the target's new children came from: an old
+     * child's index, or `n` and the index of a node in `$add`. Anything that
+     * does not line up drops the elements instead, and the next frame builds
+     * them all again.
+     *
+     * @param  list<int>  $path
+     * @param  list<int|string>  $from
+     */
+    protected static function patchBuilt(NativeComponent $owner, string $region, array $before, array $path, array $from, array $add): void
+    {
+        $entry = (static::built()[$owner] ?? [])[$region] ?? null;
+
+        if ($entry === null) {
+            return;
+        }
+
+        $reused = $entry['reused'];
+        $roots = $entry['roots'];
+        $nodes = $before;
+        $parent = null;
+        $element = null;
+
+        // Down the path, swapping each marked element for an unmarked copy.
+        foreach ($path as $index) {
+            $siblings = $parent === null ? $roots : $parent->getChildren();
+            $node = $nodes[$index] ?? null;
+            $element = $siblings[$index] ?? null;
+
+            if (! is_array($node) || $element === null) {
+                static::dropBuilt($region, $owner);
+
+                return;
+            }
+
+            if (isset($reused[$element])) {
+                $copy = static::shallowCopy($node);
+
+                if ($copy === null) {
+                    static::dropBuilt($region, $owner);
+
+                    return;
+                }
+
+                $children = $element->getChildren();
+                foreach ($children as $child) {
+                    static::markReused($child, $reused);
+                }
+                $copy->setChildren($children);
+
+                $siblings[$index] = $copy;
+                $parent === null ? $roots = $siblings : $parent->setChildren($siblings);
+                $element = $copy;
+            }
+
+            $parent = $element;
+            $nodes = is_array($node['children'] ?? null) ? $node['children'] : [];
+        }
+
+        $old = $element->getChildren();
+
+        if (count($old) !== count($nodes)) {
+            static::dropBuilt($region, $owner);
+
+            return;
+        }
+
+        $children = [];
+        foreach ($from as $source) {
+            if (is_int($source)) {
+                $children[] = $old[$source];
+
+                continue;
+            }
+
+            $built = NativeElementCollector::captureRoots(fn () => static::emit([$add[(int) substr($source, 1)]]));
+
+            if (count($built) !== 1) {
+                static::dropBuilt($region, $owner);
+
+                return;
+            }
+
+            static::markReused($built[0], $reused);
+            $children[] = $built[0];
+        }
+
+        $element->setChildren($children);
+
+        $held = static::built()[$owner];
+        $held[$region]['roots'] = $roots;
+        static::built()[$owner] = $held;
+    }
+
+    /** One element for a node, without its children. */
+    protected static function shallowCopy(array $node): ?Element
+    {
+        unset($node['children']);
+        $built = NativeElementCollector::captureRoots(fn () => static::emit([$node]));
+
+        return count($built) === 1 ? $built[0] : null;
+    }
+
+    /** @param \WeakMap<Element, true> $reused */
+    protected static function markReused(Element $element, \WeakMap $reused): void
+    {
+        $element->markReusedAsBuilt();
+        $reused[$element] = true;
+    }
+
+    protected static function dropBuilt(string $region, NativeComponent $owner): void
+    {
+        $held = static::built()[$owner] ?? null;
+
+        if ($held === null || ! isset($held[$region])) {
+            return;
+        }
+
+        unset($held[$region]);
+        static::built()[$owner] = $held;
+    }
+
+    /** @return \WeakMap<NativeComponent, array<string, array{roots: list<Element>, registry: FragmentCallbacks, reused: \WeakMap<Element, true>}>> */
+    protected static function built(): \WeakMap
+    {
+        return static::$built ??= new \WeakMap;
     }
 
     /**

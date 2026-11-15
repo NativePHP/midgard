@@ -16,8 +16,12 @@ use Native\Api\Client\Asgard\ServerScreen;
 use Native\Api\Client\Asgard\Stream;
 use Native\Api\Client\Asgard\Testing\Asgard;
 use Native\Api\Client\Tests\Asgard\Fixtures\AppPromoScreen;
+use Native\Api\Client\Tests\Asgard\Fixtures\MemoPatchFeedScreen;
 use Native\Api\Client\Tests\Asgard\Fixtures\PatchFeedScreen;
 use Native\Api\Client\Tests\Fixtures\FakeAsgardServer;
+use Native\Mobile\Edge\CallbackRegistry;
+use Native\Mobile\Edge\Element;
+use Native\Mobile\Edge\NativeComponent;
 use Native\Mobile\Edge\NativeRouter;
 use Native\Mobile\Testing\Native;
 use Native\Mobile\Testing\TestableComponent;
@@ -507,4 +511,207 @@ it('patches a server screen\'s body, and keeps its chrome', function () {
     ($this->patch)(['op' => 'append', 'target' => 'items', 'nodes' => [feedItem(4)]], 'v1', 'v3', 'promos.show', ['id' => '1'], 'screen');
     nextFrame($promo);
     $source->assertRequested('screen', 2);
+});
+
+// ── Built elements ──────────────────────────────────
+
+/** The elements a screen's feed region keeps between frames. */
+function builtFeed(TestableComponent|PatchFeedScreen $screen): ?array
+{
+    $owner = $screen instanceof TestableComponent ? $screen->instance() : $screen;
+
+    return ((new ReflectionMethod(ServerRegion::class, 'built'))->invoke(null)[$owner] ?? [])['feed'] ?? null;
+}
+
+/** The items list element of a screen's feed, from what the region keeps. */
+function builtItems(TestableComponent|PatchFeedScreen $screen): Element
+{
+    return builtFeed($screen)['roots'][0]->getChildren()[1];
+}
+
+it('paints a patched list exactly as a fresh render of the same tree', function (array $ops, array $expected) {
+    $screen = feedScreen();
+
+    foreach ($ops as $n => $op) {
+        ($this->feedPatch)($op, 'v'.($n + 1), 'v'.($n + 2));
+        nextFrame($screen);
+    }
+
+    expect(itemsOn($screen))->toBe($expected);
+
+    $patched = $screen->tree();
+    expect($patched)->toBe(feedScreen($expected)->tree());
+})->with([
+    'prepend twice, then keep' => [[
+        ['op' => 'prepend', 'target' => 'items', 'nodes' => [feedItem(4)]],
+        ['op' => 'prepend', 'target' => 'items', 'nodes' => [feedItem(5)], 'keep' => 4],
+    ], [5, 4, 1, 2]],
+    'append with keep' => [[
+        ['op' => 'append', 'target' => 'items', 'nodes' => [feedItem(4), feedItem(5)], 'keep' => 3],
+    ], [3, 4, 5]],
+    'remove' => [[
+        ['op' => 'remove', 'target' => 'items', 'keys' => ['2']],
+    ], [1, 3]],
+    'prepend a key already there' => [[
+        ['op' => 'prepend', 'target' => 'items', 'nodes' => [feedItem(2)]],
+    ], [2, 1, 3]],
+    'mixed' => [[
+        ['op' => 'prepend', 'target' => 'items', 'nodes' => [feedItem(4)]],
+        ['op' => 'remove', 'target' => 'items', 'keys' => ['1', '3']],
+        ['op' => 'append', 'target' => 'items', 'nodes' => [feedItem(6)]],
+    ], [4, 2, 6]],
+]);
+
+it('puts back the same elements on a frame with no change', function () {
+    $screen = feedScreen();
+    $roots = builtFeed($screen)['roots'];
+
+    expect(builtFeed(nextFrame($screen))['roots'])->toBe($roots);
+});
+
+it('builds only the new rows of a patch and keeps the rest', function () {
+    $screen = feedScreen();
+    $before = builtItems($screen)->getChildren();
+
+    ($this->feedPatch)(['op' => 'prepend', 'target' => 'items', 'nodes' => [feedItem(4)], 'keep' => 3]);
+    nextFrame($screen);
+
+    $after = builtItems($screen)->getChildren();
+
+    expect($after)->toHaveCount(3)
+        ->and(in_array($after[0], $before, true))->toBeFalse()
+        ->and($after[1])->toBe($before[0])
+        ->and($after[2])->toBe($before[1])
+        ->and(itemsOn($screen))->toBe([4, 1, 2]);
+});
+
+it('builds every element again for a full fragment', function () {
+    $screen = feedScreen();
+    $roots = builtFeed($screen)['roots'];
+
+    ServerRegion::applyFragment('feed', feedTree([7, 8]), $screen->instance());
+    nextFrame($screen);
+
+    expect(builtFeed($screen)['roots'][0])->not->toBe($roots[0])
+        ->and(itemsOn($screen))->toBe([7, 8]);
+});
+
+it('keeps a callback another node still carries when a patch removes one', function () {
+    $screen = feedScreen();
+    $owner = $screen->instance();
+    $twin = ['type' => 'pressable', 'key' => 'twin', 'on_press' => ['call' => 'pick', 'args' => ['1'], 'target' => 'client'],
+        'children' => [['type' => 'text', 'props' => ['text' => 'Item 9']]]];
+
+    ($this->feedPatch)(['op' => 'append', 'target' => 'items', 'nodes' => [$twin]]);
+    nextFrame($screen);
+    ($this->feedPatch)(['op' => 'remove', 'target' => 'items', 'keys' => ['1']], 'v2', 'v3');
+    nextFrame($screen);
+
+    $expression = FragmentCallbacks::expressionFor(['call' => 'pick', 'args' => ['1'], 'target' => 'client']);
+    expect(ServerRegion::registryFor('feed', $owner)->lookup($expression))->not->toBeNull();
+
+    $screen->tap('Item 9');
+    expect($screen->get('picked'))->toBe(['1']);
+});
+
+it('keeps a callback a patch removes and the next one brings back before a frame', function () {
+    $screen = feedScreen();
+    $owner = $screen->instance();
+
+    ($this->feedPatch)(['op' => 'remove', 'target' => 'items', 'keys' => ['1']]);
+    ($this->feedPatch)(['op' => 'append', 'target' => 'items', 'nodes' => [feedItem(1)]], 'v2', 'v3');
+    nextFrame($screen);
+
+    $expression = FragmentCallbacks::expressionFor(['call' => 'pick', 'args' => ['1'], 'target' => 'client']);
+    expect(ServerRegion::registryFor('feed', $owner)->lookup($expression))->not->toBeNull()
+        ->and(itemsOn($screen))->toBe([2, 3, 1]);
+
+    $screen->tap('Item 1');
+    expect($screen->get('picked'))->toBe(['1']);
+});
+
+/** A memo screen holding the feed tree, painted once. */
+function memoFeed(array $tree): MemoPatchFeedScreen
+{
+    $screen = new MemoPatchFeedScreen;
+    expect(ServerRegion::applyFragment('feed', $tree, $screen))->toBeTrue();
+    MemoPatchFeedScreen::frame($screen);
+
+    return $screen;
+}
+
+function applyMemoPatch(MemoPatchFeedScreen $screen, array $op): void
+{
+    expect((new ReflectionMethod(ServerRegion::class, 'applyPatch'))->invoke(null, $screen, 'feed', 'v1', 'v1', $op))->toBeNull();
+}
+
+/** The node with id `$id` in a published frame. The fragment's root column is unkeyed, so paths run `/feed/0/…`. */
+function frameNode(array $node, int $id): ?array
+{
+    if ($node['id'] === $id) {
+        return $node;
+    }
+
+    foreach ($node['children'] ?? [] as $child) {
+        if (($found = frameNode($child, $id)) !== null) {
+            return $found;
+        }
+    }
+
+    return null;
+}
+
+it('never answers for a patched list with a REUSE marker when native holds the old one', function () {
+    $screen = memoFeed(feedTree([1, 2, 3]));
+    MemoPatchFeedScreen::frame($screen);
+
+    applyMemoPatch($screen, ['op' => 'prepend', 'target' => 'items', 'nodes' => [feedItem(4)]]);
+    $frame = MemoPatchFeedScreen::frame($screen);
+
+    $items = frameNode($frame, Element::fnv1a32('/feed/0/items'));
+    $new = frameNode($frame, Element::fnv1a32('/feed/0/items/4'));
+    $kept = frameNode($frame, Element::fnv1a32('/feed/0/items/1'));
+
+    expect(($items['flags'] ?? 0) & 1)->toBe(0)
+        ->and($items['children'])->toHaveCount(4)
+        ->and(($new['flags'] ?? 0) & 1)->toBe(0)
+        ->and($new['children'] ?? [])->not->toBe([])
+        ->and(($kept['flags'] ?? 0) & 1)->toBe(1);
+});
+
+it('patches a second list after the first, with neither answered from a stale marker', function () {
+    $tree = ['type' => 'column', 'children' => [
+        ['type' => 'column', 'key' => 'pinned', 'children' => [feedItem('p1')]],
+        ['type' => 'column', 'key' => 'items', 'children' => array_map(feedItem(...), [1, 2])],
+    ]];
+    $screen = memoFeed($tree);
+    MemoPatchFeedScreen::frame($screen);
+
+    applyMemoPatch($screen, ['op' => 'append', 'target' => 'items', 'nodes' => [feedItem(3)]]);
+    MemoPatchFeedScreen::frame($screen);
+    applyMemoPatch($screen, ['op' => 'prepend', 'target' => 'pinned', 'nodes' => [feedItem('p0')]]);
+    $frame = MemoPatchFeedScreen::frame($screen);
+
+    $pinned = frameNode($frame, Element::fnv1a32('/feed/0/pinned'));
+    expect(($pinned['flags'] ?? 0) & 1)->toBe(0)
+        ->and(array_map(fn ($child) => $child['id'], $pinned['children']))->toBe([
+            Element::fnv1a32('/feed/0/pinned/p0'),
+            Element::fnv1a32('/feed/0/pinned/p1'),
+        ]);
+
+    // And the first list, shown again unchanged, comes back whole.
+    $items = frameNode($frame, Element::fnv1a32('/feed/0/items'));
+    expect($items['flags'] & 1)->toBe(1);
+
+    $fresh = new MemoPatchFeedScreen;
+    ServerRegion::applyFragment('feed', ['type' => 'column', 'children' => [
+        ['type' => 'column', 'key' => 'pinned', 'children' => [feedItem('p0'), feedItem('p1')]],
+        ['type' => 'column', 'key' => 'items', 'children' => array_map(feedItem(...), [1, 2, 3])],
+    ]], $fresh);
+    MemoPatchFeedScreen::frame($fresh);
+
+    // Without memo, both serialize every node: the elements must match.
+    $plain = Closure::bind(fn () => $this->renderToElement()->toArray(new CallbackRegistry), $screen, NativeComponent::class)();
+    $want = Closure::bind(fn () => $this->renderToElement()->toArray(new CallbackRegistry), $fresh, NativeComponent::class)();
+    expect($plain)->toBe($want);
 });

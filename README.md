@@ -298,9 +298,15 @@ same. A patch never fires `RegionCacheInvalidation`. It drops the region's
 cached copy, and the next full answer stores a fresh one.
 
 Applying a patch is cheap: no HTTP, and only the new nodes are checked. The
-region then repaints with the screen's next frame, which sends the screen's
-whole tree to the renderer again, as any fragment does. Patches that land
-between two frames share one repaint.
+region then repaints with the screen's next frame. Patches that land between
+two frames share one repaint.
+
+A region keeps the elements it built from its tree, so a frame puts the same
+elements back instead of building them again, and native gets a REUSE marker
+for each one it already holds. A patch builds only its new rows and drops the
+removed ones. The rest are kept. A full fragment builds everything again.
+Screens that render by streaming have no elements to keep and build the
+region every frame.
 
 ### The region cache
 

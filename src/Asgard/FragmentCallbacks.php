@@ -279,4 +279,19 @@ final class FragmentCallbacks extends CallbackRegistry
 
         return true;
     }
+
+    /**
+     * Stop resolving an expression. ServerRegion calls this for callbacks
+     * only removed nodes carried, once those nodes are off the screen.
+     */
+    public function forget(string $expression): void
+    {
+        $id = $this->expressionMap[$expression] ?? null;
+
+        if ($id === null) {
+            return;
+        }
+
+        unset($this->expressionMap[$expression], $this->map[$id], $this->kindMap[$id]);
+    }
 }
