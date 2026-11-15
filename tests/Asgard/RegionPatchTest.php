@@ -205,6 +205,42 @@ it('leaves a list under keep as it is', function () {
     expect(itemsOn(nextFrame($screen)))->toBe([4, 1, 2, 3]);
 });
 
+it('drops an existing child with the same key before a prepend', function () {
+    $screen = feedScreen();
+
+    ($this->feedPatch)(['op' => 'prepend', 'target' => 'items', 'nodes' => [feedItem(4), feedItem(2)]]);
+
+    expect(itemsOn(nextFrame($screen)))->toBe([4, 2, 1, 3]);
+});
+
+it('drops an existing child with the same key before an append', function () {
+    $screen = feedScreen();
+
+    ($this->feedPatch)(['op' => 'append', 'target' => 'items', 'nodes' => [feedItem(1), feedItem(4)]]);
+
+    expect(itemsOn(nextFrame($screen)))->toBe([2, 3, 1, 4]);
+});
+
+it('inserts nodes with no key as they are', function () {
+    $screen = feedScreen();
+    $unkeyed = array_diff_key(feedItem(1), ['key' => true]);
+
+    ($this->feedPatch)(['op' => 'prepend', 'target' => 'items', 'nodes' => [$unkeyed]]);
+
+    expect(itemsOn(nextFrame($screen)))->toBe([1, 1, 2, 3]);
+});
+
+it('applies keep after dropping duplicates', function () {
+    $screen = feedScreen();
+
+    // Item 3 is already there: dropping it leaves 4, 3, 1, 2, so keep 3 cuts item 2.
+    ($this->feedPatch)(['op' => 'prepend', 'target' => 'items', 'nodes' => [feedItem(4), feedItem(3)], 'keep' => 3]);
+    expect(itemsOn(nextFrame($screen)))->toBe([4, 3, 1]);
+
+    ($this->feedPatch)(['op' => 'append', 'target' => 'items', 'nodes' => [feedItem(4), feedItem(5)], 'keep' => 3], 'v2', 'v3');
+    expect(itemsOn(nextFrame($screen)))->toBe([1, 4, 5]);
+});
+
 it('targets the first node with the key, depth first', function () {
     $source = Asgard::fakeFragmentSource();
     $screen = Native::test(PatchFeedScreen::class);

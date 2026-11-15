@@ -1328,6 +1328,25 @@ class ServerRegion
         $children = $target['children'] ?? [];
         $keep = $op['keep'] ?? null;
 
+        // A full fetch can already hold an item a patch then adds (the server
+        // reads the version before it renders), so an existing child with
+        // the key of an incoming node goes first, in one pass.
+        if ($add !== []) {
+            $incoming = [];
+            foreach ($add as $node) {
+                if (isset($node['key']) && (is_string($node['key']) || is_int($node['key']))) {
+                    $incoming[(string) $node['key']] = true;
+                }
+            }
+
+            if ($incoming !== []) {
+                $children = array_values(array_filter(
+                    $children,
+                    fn (array $child) => ! (isset($child['key']) && (is_string($child['key']) || is_int($child['key'])) && isset($incoming[(string) $child['key']])),
+                ));
+            }
+        }
+
         $children = match ($op['op']) {
             'prepend' => $keep !== null && count($add) + count($children) > $keep
                 ? array_slice([...$add, ...$children], 0, $keep)

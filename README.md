@@ -281,7 +281,9 @@ prepend (from the end) or an append (from the start).
 
 Give the list a `key` (`key="items"`), and give each item one too. Remove
 works by item key, and keyed items keep their identity on screen as the list
-moves, so the renderer only adds and drops the rows that changed.
+moves, so the renderer only adds and drops the rows that changed. A prepend
+or append first drops any item already in the list with the key of a node it
+inserts, so an item a full fetch already showed is never there twice.
 
 The patch only applies when the device holds the version the patch was made
 from and the list is there. Anything else (a missed or out-of-order patch, a
