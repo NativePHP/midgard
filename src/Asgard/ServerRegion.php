@@ -1234,6 +1234,7 @@ class ServerRegion
     {
         $patched = 0;
         $fallback = 0;
+        $repaint = false;
         $op = static::parsePatch($patch, $reason);
 
         foreach (static::subscribers($component, $state, $region) as $owner) {
@@ -1243,12 +1244,14 @@ class ServerRegion
                 continue;
             }
 
-            $why = $op === null ? $reason : static::applyPatch($owner, $region, $held, $from, $op);
+            $asOps = false;
+            $why = $op === null ? $reason : static::applyPatch($owner, $region, $held, $from, $op, $asOps);
 
             if ($why === null) {
                 static::answer($owner, $region, $state, $version);
                 static::dropCachedCopy($owner, $region, $state);
                 $patched++;
+                $repaint = $repaint || ! $asOps;
 
                 continue;
             }
@@ -1269,7 +1272,9 @@ class ServerRegion
             $fallback++;
         }
 
-        if ($patched + $fallback > 0) {
+        // A patch sent to the screen as ops (see sendAsOps()) needs no
+        // repaint: the screen sends them in place of its next frame.
+        if ($fallback > 0 || $repaint) {
             static::$repaint = true;
         }
 
@@ -1354,8 +1359,11 @@ class ServerRegion
      * Apply a parsed op to the tree an owner holds for a region. Null when it
      * was applied, or why it was not, in which case nothing changed.
      */
-    protected static function applyPatch(NativeComponent $owner, string $region, ?string $held, string $from, array $op): ?string
+    protected static function applyPatch(NativeComponent $owner, string $region, ?string $held, string $from, array $op, ?bool &$asOps = null): ?string
     {
+        $wantOps = $asOps !== null;
+        $asOps = false;
+
         $all = static::fragments()[$owner] ?? [];
         $nodes = $all[$region] ?? null;
 
@@ -1503,7 +1511,8 @@ class ServerRegion
         $all[$region] = $nodes;
         static::fragments()[$owner] = $all;
 
-        static::patchBuilt($owner, $region, $before, $path, $from, $add);
+        $sent = static::patchBuilt($owner, $region, $before, $path, $from, $add, $wantOps);
+        $asOps = $wantOps && $sent;
 
         // Only this target's path is still known to be right: the op may
         // have moved any other one, or put a node with its key first.
@@ -3337,12 +3346,18 @@ class ServerRegion
      * @param  list<int>  $path
      * @param  list<int|string>  $from
      */
-    protected static function patchBuilt(NativeComponent $owner, string $region, array $before, array $path, array $from, array $add): void
+    protected static function patchBuilt(NativeComponent $owner, string $region, array $before, array $path, array $from, array $add, bool $asOps = false): bool
     {
         $entry = (static::built()[$owner] ?? [])[$region] ?? null;
 
+        if ($asOps) {
+            // Record from now on, so the next patch can go as ops even when
+            // this one can't.
+            $owner->useOps();
+        }
+
         if ($entry === null) {
-            return;
+            return false;
         }
 
         $reused = $entry['reused'];
@@ -3360,7 +3375,7 @@ class ServerRegion
             if (! is_array($node) || $element === null) {
                 static::dropBuilt($region, $owner);
 
-                return;
+                return false;
             }
 
             if (isset($reused[$element])) {
@@ -3369,7 +3384,7 @@ class ServerRegion
                 if ($copy === null) {
                     static::dropBuilt($region, $owner);
 
-                    return;
+                    return false;
                 }
 
                 $children = $element->getChildren();
@@ -3392,7 +3407,7 @@ class ServerRegion
         if (count($old) !== count($nodes)) {
             static::dropBuilt($region, $owner);
 
-            return;
+            return false;
         }
 
         $children = [];
@@ -3408,7 +3423,7 @@ class ServerRegion
             if (count($built) !== 1) {
                 static::dropBuilt($region, $owner);
 
-                return;
+                return false;
             }
 
             static::markReused($built[0], $reused);
@@ -3420,6 +3435,97 @@ class ServerRegion
         $held = static::built()[$owner];
         $held[$region]['roots'] = $roots;
         static::built()[$owner] = $held;
+
+        return $asOps && static::sendAsOps($owner, $region, $element, $old, $from, $children);
+    }
+
+    /**
+     * Queue a patch on the screen as ops: remove the target's children that
+     * went, insert the ones that came, without rendering the screen. The
+     * built elements already hold the change, so the next full render draws
+     * the same tree. Returns false, and queues nothing, when it can't: the
+     * screen isn't the one running, a child isn't keyed, or the target
+     * can't be told apart from another node with its key.
+     *
+     * @param  list<Element>  $old
+     * @param  list<int|string>  $from
+     * @param  list<Element>  $children
+     */
+    protected static function sendAsOps(NativeComponent $owner, string $region, Element $target, array $old, array $from, array $children): bool
+    {
+        $screen = $owner->nativeRoot();
+        $key = $target->getKey();
+
+        if ($screen !== NativeComponent::active() || $key === null) {
+            return false;
+        }
+
+        // Every child keyed: an unkeyed one's id is its position, which an
+        // insert or remove before it changes.
+        foreach ([...$old, ...$children] as $child) {
+            if ($child->getKey() === null) {
+                return false;
+            }
+        }
+
+        // The target's key path, under this region's node.
+        $regions = $owner->nativeKeyPaths($region);
+        $paths = array_values(array_filter(
+            $owner->nativeKeyPaths($key),
+            function (string $path) use ($regions) {
+                foreach ($regions as $at) {
+                    if (str_starts_with($path, $at.'/')) {
+                        return true;
+                    }
+                }
+
+                return false;
+            },
+        ));
+
+        if (count($paths) !== 1) {
+            return false;
+        }
+
+        $registry = static::registryFor($region, $owner);
+        $kept = array_flip(array_filter($from, 'is_int'));
+
+        $removed = [];
+        foreach ($old as $i => $child) {
+            if (! isset($kept[$i])) {
+                $removed[] = (string) $child->getKey();
+            }
+        }
+
+        if ($removed !== []) {
+            $owner->removeChildren($paths[0], ...$removed);
+        }
+
+        // New children in runs, each inserted where it ends up. Earlier runs
+        // are in place by then, so the index is the final one.
+        $run = [];
+        foreach ($from as $at => $source) {
+            if (is_string($source)) {
+                $element = $children[$at];
+                if ($registry !== null) {
+                    $element->ownCallbacks($registry);
+                }
+                $run[$at] = $element;
+
+                continue;
+            }
+
+            if ($run !== []) {
+                $owner->insertChildren($paths[0], array_key_first($run), ...array_values($run));
+                $run = [];
+            }
+        }
+
+        if ($run !== []) {
+            $owner->insertChildren($paths[0], array_key_first($run), ...array_values($run));
+        }
+
+        return true;
     }
 
     /** One element for a node, without its children. */

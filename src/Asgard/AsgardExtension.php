@@ -78,8 +78,13 @@ class AsgardExtension extends RunloopExtensionBase
 
     public function tick(array $tree): bool
     {
+        // A region that changed some other way than as ops (a fragment
+        // landed, a patch fell back) needs a full frame, so a turn that
+        // also queued ops can't send them alone.
+        $repaint = ServerRegion::repaintPending();
+
         if (! ServerRegion::hasDeadlines() && ! ServerMethods::hasDeadlines()) {
-            return false;
+            return $repaint;
         }
 
         // Fragments held for RegionCacheInvalidation. The screen's #[On]
@@ -93,7 +98,7 @@ class AsgardExtension extends RunloopExtensionBase
             $acted = ServerMethods::expire($tree) || $acted;
         }
 
-        return $acted;
+        return $acted || $repaint;
     }
 
     public function handleNativeEvent(string $name, mixed $payload): bool

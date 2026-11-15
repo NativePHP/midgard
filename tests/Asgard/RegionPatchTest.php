@@ -23,6 +23,7 @@ use Native\Mobile\Edge\CallbackRegistry;
 use Native\Mobile\Edge\Element;
 use Native\Mobile\Edge\NativeComponent;
 use Native\Mobile\Edge\NativeRouter;
+use Native\Mobile\Testing\FakeBridge;
 use Native\Mobile\Testing\Native;
 use Native\Mobile\Testing\TestableComponent;
 
@@ -817,4 +818,126 @@ it('moves a region to the state a fetch answer\'s delta left, and patches it the
 
     expect(itemsOn(nextFrame($screen)))->toBe([1, 2, 3]);
     $source->assertRequested('feed', 2);
+});
+
+// ── Sent as ops ─────────────────────────────────────
+
+/**
+ * Run a feed screen as the runloop's screen: active, using ops, and with a
+ * full frame published that recorded where its keyed nodes are.
+ */
+function opsFeedScreen(array $ids = [1, 2, 3]): NativeComponent
+{
+    $screen = feedScreen($ids)->instance();
+    NativeComponent::markActive($screen);
+    $screen->useOps();
+    fullFrameOf($screen);
+
+    return $screen;
+}
+
+/** Render and serialize the screen as the runloop does for a full frame. */
+function fullFrameOf(NativeComponent $screen): array
+{
+    $element = (new ReflectionMethod(NativeComponent::class, 'renderToElement'))->invoke($screen);
+
+    return (new ReflectionMethod(NativeComponent::class, 'memoizedToArray'))->invoke($screen, $element);
+}
+
+function publishOps(NativeComponent $screen): bool
+{
+    return (new ReflectionMethod(NativeComponent::class, 'publishOpsTurn'))->invoke($screen);
+}
+
+/** The keyed `items` node of a wire tree, depth first. */
+function itemsWireNode(array $node): ?array
+{
+    if (($node['id'] ?? null) === Element::fnv1a32('/feed/0/items')) {
+        return $node;
+    }
+
+    foreach ($node['children'] ?? [] as $child) {
+        if (($found = itemsWireNode($child)) !== null) {
+            return $found;
+        }
+    }
+
+    return null;
+}
+
+it('sends a prepend with keep to the running screen as ops, without a repaint', function () {
+    $screen = opsFeedScreen();
+    expect(ServerRegion::repaintPending())->toBeFalse();
+
+    ($this->feedPatch)(['op' => 'prepend', 'target' => 'items', 'nodes' => [feedItem(5), feedItem(4)], 'keep' => 3]);
+
+    expect(ServerRegion::repaintPending())->toBeFalse()
+        ->and($screen->hasPendingOps())->toBeTrue()
+        ->and(publishOps($screen))->toBeTrue();
+
+    $frame = FakeBridge::current()->lastPublish();
+    expect($frame['type'])->toBe('__ops')
+        ->and(array_column($frame['children'], 'type'))->toBe(['__op_remove', '__op_insert']);
+
+    [$remove, $insert] = $frame['children'];
+    $items = Element::fnv1a32('/feed/0/items');
+
+    expect($remove['props'])->toBe(['parent' => (string) $items, 'ids' => implode(',', [
+        Element::fnv1a32('/feed/0/items/2'), Element::fnv1a32('/feed/0/items/3'),
+    ])])
+        ->and($insert['props'])->toBe(['parent' => (string) $items, 'index' => 0]);
+
+    // A full render of the patched state draws the same rows, with the
+    // same ids and the same tap callbacks.
+    (new ReflectionProperty(NativeComponent::class, 'lastNodeHashes'))->setValue($screen, []);
+    $full = itemsWireNode(fullFrameOf($screen));
+
+    expect(array_column($full['children'], 'id'))->toBe([
+        Element::fnv1a32('/feed/0/items/5'), Element::fnv1a32('/feed/0/items/4'), Element::fnv1a32('/feed/0/items/1'),
+    ])
+        ->and($insert['children'][0]['id'])->toBe($full['children'][0]['id'])
+        ->and($insert['children'][0]['on_press'])->toBe($full['children'][0]['on_press'])
+        ->and($insert['children'][1]['on_press'])->toBe($full['children'][1]['on_press']);
+});
+
+it('sends a remove as ops', function () {
+    $screen = opsFeedScreen([1, 2, 3, 4]);
+
+    ($this->feedPatch)(['op' => 'remove', 'target' => 'items', 'keys' => [2, '99']]);
+
+    expect(publishOps($screen))->toBeTrue();
+    $frame = FakeBridge::current()->lastPublish();
+
+    expect($frame['children'][0]['props']['ids'])->toBe((string) Element::fnv1a32('/feed/0/items/2'));
+});
+
+it('repaints instead when the screen has no recorded frame yet', function () {
+    $screen = feedScreen()->instance();
+    NativeComponent::markActive($screen);
+
+    ($this->feedPatch)(['op' => 'prepend', 'target' => 'items', 'nodes' => [feedItem(4)]]);
+
+    expect(ServerRegion::repaintPending())->toBeTrue()
+        ->and($screen->hasPendingOps())->toBeFalse();
+});
+
+it('repaints instead when the screen is not the one running', function () {
+    $screen = opsFeedScreen();
+    NativeComponent::markActive(new PatchFeedScreen);
+
+    ($this->feedPatch)(['op' => 'prepend', 'target' => 'items', 'nodes' => [feedItem(4)]]);
+
+    expect(ServerRegion::repaintPending())->toBeTrue()
+        ->and($screen->hasPendingOps())->toBeFalse();
+});
+
+it('repaints instead when a new child has no key', function () {
+    $screen = opsFeedScreen();
+    $node = feedItem(4);
+    unset($node['key']);
+
+    ($this->feedPatch)(['op' => 'prepend', 'target' => 'items', 'nodes' => [$node]]);
+
+    expect(ServerRegion::repaintPending())->toBeTrue()
+        ->and($screen->hasPendingOps())->toBeFalse();
 });
