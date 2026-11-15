@@ -275,3 +275,15 @@ it('hands back a too_many_regions refusal with its status and error', function (
     expect($this->client->render(renderBody(['regions' => ['a', 'b']])))
         ->toBe(['ok' => false, 'status' => 422, 'error' => 'too_many_regions']);
 });
+
+it('shakes hands again when the app can render element types its session did not list', function () {
+    $server = new FakeAsgardServer;
+    $config = ['base' => 'https://asgard.test/_asgard', 'key' => 'test-key', 'store' => null];
+
+    AsgardClient::make($config + ['elements' => ['list_item']], $server->client())->render(renderBody());
+    AsgardClient::make($config + ['elements' => ['list_item']], $server->client())->render(renderBody());
+    AsgardClient::make($config + ['elements' => ['lazy_stack', 'list_item']], $server->client())->render(renderBody());
+
+    expect($server->handshakes)->toBe(2)
+        ->and($server->handshakeBodies[1]['elements'])->toBe(['lazy_stack', 'list_item']);
+});

@@ -105,16 +105,17 @@ class AsgardClient
     public static function make(array $config, ?ClientInterface $http = null): self
     {
         $store = Cache::store($config['store'] ?? null);
+        $elements = $config['elements'] ?? self::advertisedElements();
 
         return new self(
             $config['base'],
             $config['key'],
-            new SessionCache($store, SessionCache::keyFor($config['base'], $config['key'])),
+            new SessionCache($store, SessionCache::keyFor($config['base'], $config['key'], $elements)),
             (float) ($config['timeout'] ?? 20),
             $http,
             (float) ($config['upload_timeout'] ?? 150),
             new TransportMemory($store, TransportMemory::keyFor($config['base'])),
-            $config['elements'] ?? null,
+            $elements,
             $config['headers'] ?? null,
         );
     }

@@ -27,10 +27,20 @@ class SessionCache
         protected string $key,
     ) {}
 
-    /** A cache key per server and Asgard key, so two servers never share a session. */
-    public static function keyFor(string $url, string $asgardKey): string
+    /**
+     * A cache key per server, Asgard key and advertised element list, so two
+     * servers never share a session, and an app update that can render new
+     * element types shakes hands again instead of reusing a session whose
+     * handshake didn't list them (the server refuses a fragment that uses
+     * a type the session didn't advertise).
+     *
+     * @param  list<string>  $elements
+     */
+    public static function keyFor(string $url, string $asgardKey, array $elements = []): string
     {
-        return 'midgard:asgard:session:'.hash('sha256', rtrim($url, '/')."\n".$asgardKey);
+        sort($elements);
+
+        return 'midgard:asgard:session:'.hash('sha256', rtrim($url, '/')."\n".$asgardKey."\n".implode(',', $elements));
     }
 
     public function get(?int $now = null): ?Session
