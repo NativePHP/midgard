@@ -2,7 +2,7 @@
     "name": "nativephp/midgard",
     "description": "Client library for native apps",
     "type": "nativephp-plugin",
-    "license": "proprietary",
+    "license": "MIT",
     "authors": [
         {
             "name": "Simon Hamp",
