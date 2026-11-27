@@ -154,6 +154,28 @@ it('hands a shared region\'s fragment to the pusher, and keeps its version for a
     expect(($this->opened)()['body']['subscriptions'][0]['versions'])->toBe(['stats' => 'v2']);
 });
 
+it('does not advance the held version when the pusher refuses a fragment', function () {
+    $streams = new RegionStreams($this->client, fn () => 0, fn () => 1);
+    $streams->watch([sub(versions: ['stats' => 'v1'])]);
+
+    $streams->receive(($this->event)(fragmentEvent()));
+
+    expect($streams->subscriptions()['home']['versions'])->toBe(['stats' => 'v1']);
+});
+
+it('ignores pushed events with a wrong protocol version or malformed version token', function (array $override) {
+    $this->streams->watch([sub(versions: ['stats' => 'v1'])]);
+
+    $this->streams->receive(($this->event)(fragmentEvent('stats', $override)));
+
+    expect($this->pushed)->toBe([])
+        ->and($this->streams->subscriptions()['home']['versions'])->toBe(['stats' => 'v1']);
+})->with([
+    'protocol 2' => [['protocol' => 2]],
+    'missing protocol' => [['protocol' => null]],
+    'space in version' => [['version' => 'v 2']],
+]);
+
 it('does not take a signal\'s version as held, since the region is not fetched yet', function () {
     $this->streams->watch([sub(versions: ['stats' => 'v1'])]);
 

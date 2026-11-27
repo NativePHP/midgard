@@ -78,10 +78,38 @@ it("takes the server's own unsigned early rejection as an Asgard answer", functi
 
     $result = $this->client->render(probeBody());
 
-    expect($result)->toMatchArray(['ok' => false, 'status' => $status])
+    expect($result)->toMatchArray(['ok' => false, 'status' => $status, 'error' => 'unsigned response'])
         ->and($this->server->methods)->toBe(['POST', 'QUERY'])
         ->and($this->client->transport())->toBe(TransportMemory::QUERY);
-})->with([403, 413]);
+})->with([403, 413, 415, 422]);
+
+it('falls back on an unsigned 415 or 422 that does not carry an Asgard early rejection body', function (int $status) {
+    $this->server->blockQuery = $status;
+
+    expect($this->client->render(probeBody()))->toMatchArray(['ok' => true])
+        ->and($this->server->methods)->toBe(['POST', 'QUERY', 'POST'])
+        ->and($this->client->transport())->toBe(TransportMemory::POST);
+})->with([415, 422]);
+
+it('requires protocols to be a list on an unsigned 422 early rejection', function () {
+    expect(AsgardClient::isEarlyRejection(422, '{"error":"unsupported_protocol","protocols":[1]}'))->toBeTrue()
+        ->and(AsgardClient::isEarlyRejection(422, '{"error":"unsupported_protocol"}'))->toBeFalse()
+        ->and(AsgardClient::isEarlyRejection(422, '{"error":"unsupported_protocol","protocols":{"a":1}}'))->toBeFalse()
+        ->and(AsgardClient::isEarlyRejection(415, '{"error":"unsupported_coding"}'))->toBeTrue()
+        ->and(AsgardClient::isEarlyRejection(415, '{"error":"unsupported_type"}'))->toBeFalse();
+});
+
+it('keeps the session when a firewall returns a 419 page during the QUERY probe', function () {
+    $this->server->blockQuery = 419;
+
+    expect($this->client->render(probeBody()))->toMatchArray(['ok' => true])
+        ->and($this->server->methods)->toBe(['POST', 'QUERY', 'POST'])
+        ->and($this->client->transport())->toBe(TransportMemory::POST)
+        ->and($this->client->currentSession())->not->toBeNull();
+
+    $this->client->render(probeBody());
+    expect($this->server->handshakes)->toBe(1);
+});
 
 it('takes a sealed error as an Asgard answer', function () {
     $this->server->plaintext = json_encode(['protocol' => 1, 'error' => 'unknown_component']);

@@ -152,3 +152,38 @@ it('signs Asgard-Cache on a response byte for byte, and refuses it unsigned', fu
     expect(fn () => Wire::openResponse($this->keys, $this->session, $c['status'], $stripped, ($this->b)($c['expected']['body']), $requestSignature, $c['created']))
         ->toThrow(SecurityException::class);
 });
+
+it('opens a stream event regardless of member order and ignores unknown members', function () {
+    $streamSignature = ($this->b)($this->v['stream_request']['expected']['signature']);
+    $e = $this->v['stream_event'];
+    $decoded = json_decode($e['expected']['data'], true);
+
+    $reordered = json_encode(['sig' => $decoded['sig'], 'enc' => $decoded['enc'], 'body' => $decoded['body']], JSON_UNESCAPED_SLASHES);
+    $withExtra = json_encode(['extra' => 1, 'body' => $decoded['body'], 'enc' => $decoded['enc'], 'sig' => $decoded['sig']], JSON_UNESCAPED_SLASHES);
+
+    expect(Wire::openEvent($this->keys, $this->session, $streamSignature, $e['id'], $e['event'], $reordered))->toBe($e['plaintext'])
+        ->and(Wire::openEvent($this->keys, $this->session, $streamSignature, $e['id'], $e['event'], $withExtra))->toBe($e['plaintext']);
+
+    $missingEnc = json_encode(['body' => $decoded['body'], 'sig' => $decoded['sig']], JSON_UNESCAPED_SLASHES);
+    expect(fn () => Wire::openEvent($this->keys, $this->session, $streamSignature, $e['id'], $e['event'], $missingEnc))
+        ->toThrow(SecurityException::class);
+});
+
+it('refuses a response whose signed Asgard-Protocol header is not 1', function () {
+    $r = $this->v['response'];
+    $requestSignature = ($this->b)($this->v['request']['expected']['signature']);
+    $body = ($this->b)($r['expected']['body']);
+    $headers = $r['expected']['headers'];
+    $headers['asgard-protocol'] = '2';
+
+    $input = StructuredFields::parseDictionary($headers['signature-input'])['asgard'];
+    [, $base] = Wire::signatureBase($input['value'], $input['params'], fn ($name) => match ($name) {
+        '@status' => (string) $r['status'],
+        'signature' => ':'.base64_encode($requestSignature).':',
+        default => $headers[$name],
+    });
+    $headers['signature'] = 'asgard='.StructuredFields::serializeBareItem(StructuredFields::bytes(hash_hmac('sha256', $base, $this->keys->sigServer, true)));
+
+    expect(fn () => Wire::openResponse($this->keys, $this->session, $r['status'], $headers, $body, $requestSignature, $r['created']))
+        ->toThrow(SecurityException::class, 'protocol version');
+});

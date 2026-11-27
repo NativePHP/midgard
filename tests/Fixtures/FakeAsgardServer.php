@@ -174,19 +174,28 @@ class FakeAsgardServer
         if (str_ends_with($path, '/upload')) {
             // A frame: header length, JSON header, the file.
             $length = unpack('N', $opened['body'])[1];
-            $this->requests[array_key_last($this->requests)]['body'] = json_decode(substr($opened['body'], 4, $length), true);
+            $raw = substr($opened['body'], 4, $length);
+            $this->requests[array_key_last($this->requests)]['raw'] = $raw;
+            $this->requests[array_key_last($this->requests)]['body'] = json_decode($raw, true);
             $this->requests[array_key_last($this->requests)]['bytes'] = substr($opened['body'], 4 + $length);
         } else {
+            $this->requests[array_key_last($this->requests)]['raw'] = $opened['body'];
             $this->requests[array_key_last($this->requests)]['body'] = json_decode($opened['body'], true);
         }
 
         if ($this->refuseWith !== null) {
             // A listed early rejection carries the body §7.3 gives it.
-            $error = match ($this->refuseWith) {
-                403 => 'forbidden', 405 => 'method_not_allowed', 413 => 'too_large', 419 => 'session_expired', default => 'refused',
+            $payload = match ($this->refuseWith) {
+                403 => ['error' => 'forbidden'],
+                405 => ['error' => 'method_not_allowed'],
+                413 => ['error' => 'too_large'],
+                415 => ['error' => 'unsupported_coding'],
+                419 => ['error' => 'session_expired'],
+                422 => ['error' => 'unsupported_protocol', 'protocols' => [1]],
+                default => ['error' => 'refused'],
             };
 
-            return new Response($this->refuseWith, ['Content-Type' => 'application/json'], json_encode(['error' => $error]));
+            return new Response($this->refuseWith, ['Content-Type' => 'application/json'], json_encode($payload));
         }
 
         $message = match (true) {

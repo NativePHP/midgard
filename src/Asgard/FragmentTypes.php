@@ -36,7 +36,10 @@ final class FragmentTypes
     ];
 
     /** What a type name in `elements` must look like (§6.1). */
-    public const NAME_PATTERN = '/^[a-z][a-z0-9_]*$/D';
+    public const NAME_PATTERN = '/^[a-z][a-z0-9_]{0,63}$/D';
+
+    /** At most this many types may be advertised in `elements` (§6.1). */
+    public const MAX_ADVERTISED = 256;
 
     /**
      * The extra types this build can render, for the handshake's `elements`.
@@ -60,7 +63,7 @@ final class FragmentTypes
 
         sort($types);
 
-        return $types;
+        return array_slice($types, 0, self::MAX_ADVERTISED);
     }
 
     /**

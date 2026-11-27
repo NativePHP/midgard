@@ -97,9 +97,10 @@ class HttpServerTransport implements ServerTransport
             'id' => $id,
             'ok' => false,
             'error' => $error,
-            // An HTTP status means the server answered: reason `server`.
-            // Nothing came back: reason `network`.
+            // An HTTP status means the server answered; verification failures
+            // and bad 2xx responses surface as `invalid` (§10.2, §10.5).
             'code' => $status >= 100 ? $status : null,
+            'reason' => HttpFragmentSource::reasonFor($status, $error),
         ]);
     }
 

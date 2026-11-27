@@ -52,7 +52,9 @@ class AsgardClient
         403 => ['forbidden', 'nonce_required'],
         405 => ['method_not_allowed'],
         413 => ['too_large'],
+        415 => ['unsupported_coding'],
         419 => ['session_expired'],
+        422 => ['unsupported_protocol'],
     ];
 
     /**
@@ -329,9 +331,10 @@ class AsgardClient
         }
 
         $delta = $result['json']['delta'] ?? null;
-        $more = array_key_exists('fragments', $result['json']) ? self::more($result['json']) : null;
+        $more = array_key_exists('fragments', $result['json']) ? self::more($result['json'], $result['invalidate']) : null;
 
-        if ($more === null || ! is_array($delta) || ($delta !== [] && array_is_list($delta))) {
+        if (($result['json']['protocol'] ?? null) !== (int) Wire::PROTOCOL
+            || $more === null || ! is_array($delta) || ($delta !== [] && array_is_list($delta))) {
             return ['ok' => false, 'status' => $result['status'], 'error' => 'bad response'];
         }
 
@@ -355,9 +358,10 @@ class AsgardClient
         }
 
         $delta = $result['json']['delta'] ?? null;
-        $more = self::more($result['json']);
+        $more = self::more($result['json'], $result['invalidate']);
 
-        if (! is_array($delta) || ($delta !== [] && array_is_list($delta)) || $more === null) {
+        if (($result['json']['protocol'] ?? null) !== (int) Wire::PROTOCOL
+            || ! is_array($delta) || ($delta !== [] && array_is_list($delta)) || $more === null) {
             return ['ok' => false, 'status' => $result['status'], 'error' => 'bad response'];
         }
 
@@ -401,9 +405,10 @@ class AsgardClient
         }
 
         $delta = $result['json']['delta'] ?? null;
-        $more = self::more($result['json']);
+        $more = self::more($result['json'], $result['invalidate']);
 
-        if (! is_array($delta) || ($delta !== [] && array_is_list($delta)) || $more === null) {
+        if (($result['json']['protocol'] ?? null) !== (int) Wire::PROTOCOL
+            || ! is_array($delta) || ($delta !== [] && array_is_list($delta)) || $more === null) {
             return ['ok' => false, 'status' => $result['status'], 'error' => 'bad response'];
         }
 
@@ -413,6 +418,10 @@ class AsgardClient
     /** The upload frame: header length, JSON header, bytes. */
     public static function frame(array $header, string $bytes): string
     {
+        if (array_key_exists('state', $header) && $header['state'] === []) {
+            $header['state'] = (object) [];
+        }
+
         $json = json_encode($header, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION | JSON_THROW_ON_ERROR);
 
         return pack('N', strlen($json)).$json.$bytes;
@@ -425,12 +434,12 @@ class AsgardClient
      * @param  array<string, mixed>  $json
      * @return array{fragments?: array<string, array{fragment: mixed, version?: string, chrome?: array}>, refresh?: list<array{component: string, region?: string}>}|null
      */
-    protected static function more(array $json): ?array
+    protected static function more(array $json, bool $invalidate = false): ?array
     {
         $more = [];
 
         if (array_key_exists('fragments', $json)) {
-            $parts = self::parts($json['fragments']);
+            $parts = self::parts($json['fragments'], $invalidate);
 
             if ($parts === null) {
                 return null;
@@ -454,11 +463,12 @@ class AsgardClient
 
     /**
      * `{region: {version?, fragment, chrome?, made_at?, max_age?}}`, at least
-     * one region, or null. A part may be `{cached: true}` instead.
+     * one region, or null. A part may be `{cached: true}` instead, unless the
+     * answer carries `Asgard-Cache: invalidate` (§8.3).
      *
      * @return array<string, array{fragment?: mixed, version?: string, chrome?: array, made_at?: int, max_age?: int, cached?: true}>|null
      */
-    protected static function parts(mixed $fragments): ?array
+    protected static function parts(mixed $fragments, bool $invalidate = false): ?array
     {
         if (! is_array($fragments) || $fragments === [] || array_is_list($fragments) || count($fragments) > self::MAX_FRAGMENTS) {
             return null;
@@ -468,6 +478,10 @@ class AsgardClient
 
         foreach ($fragments as $region => $part) {
             if (is_array($part) && ! array_key_exists('fragment', $part) && ($part['cached'] ?? null) === true) {
+                if ($invalidate) {
+                    return null;
+                }
+
                 $parts[(string) $region] = ['cached' => true];
 
                 continue;
@@ -501,7 +515,7 @@ class AsgardClient
         }
 
         if (array_key_exists('chrome', $json)) {
-            if (! is_array($json['chrome'])) {
+            if (! is_array($json['chrome']) || ($json['chrome'] !== [] && array_is_list($json['chrome']))) {
                 return null;
             }
 
@@ -568,7 +582,8 @@ class AsgardClient
         $routes = $result['json']['routes'] ?? null;
         $version = $result['json']['version'] ?? null;
 
-        if (! is_array($routes) || ! array_is_list($routes) || ! is_string($version) || strlen($version) > 64) {
+        if (($result['json']['protocol'] ?? null) !== (int) Wire::PROTOCOL
+            || ! is_array($routes) || ! array_is_list($routes) || ! is_string($version) || strlen($version) > 64) {
             return ['ok' => false, 'status' => $result['status'], 'error' => 'route list is malformed'];
         }
 
@@ -588,6 +603,10 @@ class AsgardClient
      */
     protected function call(string $endpoint, array $body, bool $action): array
     {
+        if (array_key_exists('state', $body) && $body['state'] === []) {
+            $body['state'] = (object) [];
+        }
+
         return $this->send($endpoint, json_encode($body, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR), $action);
     }
 
@@ -601,7 +620,7 @@ class AsgardClient
         try {
             $result = $this->attempt($this->currentSession() ?? $this->handshake(), $endpoint, $plaintext, $action, $timeout);
 
-            if ($result['status'] === 419) {
+            if ($result['status'] === 419 && ($result['error'] ?? null) === 'session_expired') {
                 // The server lost the session. Exactly one fresh one, exactly one retry.
                 $result = $this->attempt($this->handshake(), $endpoint, $plaintext, $action, $timeout);
             }
@@ -651,7 +670,7 @@ class AsgardClient
             return $this->exchange($session, $name, $plaintext, $action, $timeout, TransportMemory::POST)[1];
         }
 
-        [$asgard, $result] = $this->exchange($session, $name, $plaintext, $action, $timeout, $known ?? TransportMemory::QUERY);
+        [$asgard, $result] = $this->exchange($session, $name, $plaintext, $action, $timeout, $known ?? TransportMemory::QUERY, $known === null);
 
         if ($known !== null || $asgard === null) {
             return $result;
@@ -684,7 +703,7 @@ class AsgardClient
      *
      * @return array{0: ?bool, 1: array{ok: true, status: int, json: array<string, mixed>}|array{ok: false, status: int, error: string}}
      */
-    protected function exchange(Session $session, string $name, string $plaintext, bool $action, ?float $timeout, string $form): array
+    protected function exchange(Session $session, string $name, string $plaintext, bool $action, ?float $timeout, string $form, bool $probing = false): array
     {
         $endpoint = $this->endpoint($name);
         $sealed = $this->seal($session, $endpoint, $plaintext, $action ? Base64Url::encode(random_bytes(16)) : null, $form);
@@ -706,7 +725,9 @@ class AsgardClient
             $early = self::isEarlyRejection($status, (string) $response->getBody());
 
             if ($status === 419) {
-                $this->sessions->forget($session->id);
+                if (! $probing || $early) {
+                    $this->sessions->forget($session->id);
+                }
 
                 return [$early, ['ok' => false, 'status' => 419, 'error' => 'session_expired']];
             }
@@ -745,8 +766,16 @@ class AsgardClient
     {
         $json = json_decode($body, true);
 
-        return isset(self::EARLY_REJECTIONS[$status]) && is_array($json)
-            && in_array($json['error'] ?? null, self::EARLY_REJECTIONS[$status], true);
+        if (! isset(self::EARLY_REJECTIONS[$status]) || ! is_array($json)
+            || ! in_array($json['error'] ?? null, self::EARLY_REJECTIONS[$status], true)) {
+            return false;
+        }
+
+        if ($status === 422) {
+            return is_array($json['protocols'] ?? null) && array_is_list($json['protocols']);
+        }
+
+        return true;
     }
 
     /** @return array{headers: array<string, string>, body: string, signature: string} */
