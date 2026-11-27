@@ -173,13 +173,15 @@ class RegionStreams
         }
 
         $payload = json_decode($plaintext, true);
+        $protocol = is_array($payload) ? ($payload['protocol'] ?? null) : null;
         $id = is_array($payload) ? ($payload['subscription'] ?? null) : null;
         $region = is_array($payload) ? ($payload['region'] ?? null) : null;
         $version = is_array($payload) ? ($payload['version'] ?? null) : null;
         $subscription = is_string($id) ? ($this->subscriptions[$id] ?? null) : null;
 
-        if ($subscription === null || ! is_string($region) || ! in_array($region, $subscription['regions'], true)
-            || ! is_string($version) || $version === '' || strlen($version) > 64) {
+        if ($protocol !== (int) Wire::PROTOCOL
+            || $subscription === null || ! is_string($region) || ! in_array($region, $subscription['regions'], true)
+            || ! is_string($version) || preg_match('/^[A-Za-z0-9_-]{1,64}$/D', $version) !== 1) {
             Log::warning('Asgard: ignored a pushed event that is not for a subscription and region of this stream');
 
             return;
@@ -203,16 +205,16 @@ class RegionStreams
             return;
         }
 
-        // A reconnect sends this version, so the region is not sent again.
-        $this->subscriptions[$id]['versions'][$region] = $version;
-
         // A server screen's event carries its chrome too, checked by the screen.
         $chrome = $payload['chrome'] ?? null;
 
         $madeAt = is_int($payload['made_at'] ?? null) && $payload['made_at'] > 0 ? $payload['made_at'] : null;
         $maxAge = is_int($payload['max_age'] ?? null) && $payload['max_age'] >= 0 ? $payload['max_age'] : null;
 
-        ($this->pusher)($subscription['component'], $subscription['state'], $region, $payload['fragment'], is_array($chrome) ? $chrome : null, $version, $madeAt, $maxAge);
+        // A reconnect sends this version only when at least one instance took the fragment.
+        if (($this->pusher)($subscription['component'], $subscription['state'], $region, $payload['fragment'], is_array($chrome) ? $chrome : null, $version, $madeAt, $maxAge) > 0) {
+            $this->subscriptions[$id]['versions'][$region] = $version;
+        }
     }
 
     /**
@@ -227,7 +229,7 @@ class RegionStreams
         $from = $payload['from'] ?? null;
         $patch = $payload['patch'] ?? null;
 
-        if ($this->patcher === null || ! is_string($from) || $from === '' || strlen($from) > 64 || ! is_array($patch)) {
+        if ($this->patcher === null || ! is_string($from) || preg_match('/^[A-Za-z0-9_-]{1,64}$/D', $from) !== 1 || ! is_array($patch)) {
             Log::debug("Asgard: a patch for [{$subscription['component']}] [{$region}] cannot be applied here. Fetching the region instead.");
             ($this->signaller)($subscription['component'], $subscription['state'], $region, $version);
 

@@ -52,10 +52,22 @@ it('advertises what the registry holds beyond core, without chrome or regions', 
 it('leaves a registered type out when its name is not a valid element name', function () {
     ElementRegistry::register('stripe.payment_sheet', Column::class);
     ElementRegistry::register('BigChart', Column::class);
+    ElementRegistry::register('a'.str_repeat('b', 64), Column::class);
+    ElementRegistry::register('a'.str_repeat('c', 63), Column::class);
 
-    expect(FragmentTypes::advertised())->not->toContain('stripe.payment_sheet', 'BigChart');
+    expect(FragmentTypes::advertised())->not->toContain('stripe.payment_sheet', 'BigChart', 'a'.str_repeat('b', 64))
+        ->and(FragmentTypes::advertised())->toContain('a'.str_repeat('c', 63));
 
     expect(ServerRegion::applyFragment('promo', ['type' => 'stripe.payment_sheet']))->toBeFalse();
+    expect(ServerRegion::applyFragment('promo', ['type' => 'a'.str_repeat('b', 64)]))->toBeFalse();
+});
+
+it('caps advertised elements at 256 entries', function () {
+    for ($i = 0; $i < 300; $i++) {
+        ElementRegistry::register('custom_el_'.str_pad((string) $i, 3, '0', STR_PAD_LEFT), Column::class);
+    }
+
+    expect(FragmentTypes::advertised())->toHaveCount(FragmentTypes::MAX_ADVERTISED);
 });
 
 it('picks up a type a UI package registers at runtime', function () {

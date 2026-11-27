@@ -207,6 +207,8 @@ it('maps failures to codes the device reads as reasons', function (array $result
 })->with([
     'too large' => [['ok' => false, 'status' => 413, 'error' => 'too_large'], 413, 'server'],
     'wrong type' => [['ok' => false, 'status' => 415, 'error' => 'unsupported_type'], 415, 'server'],
+    'failed verification' => [['ok' => false, 'status' => 200, 'error' => 'response failed verification: bad signature'], 200, 'invalid'],
+    'bad response' => [['ok' => false, 'status' => 200, 'error' => 'bad response'], 200, 'invalid'],
     'no response' => [['ok' => false, 'status' => 0, 'error' => 'cURL error 28'], null, 'network'],
     'file changed' => [['ok' => false, 'status' => 0, 'error' => 'The file changed after it was checked.'], null, 'network'],
 ]);

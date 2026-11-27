@@ -1,5 +1,9 @@
 <?php
 
+use GuzzleHttp\Client;
+use GuzzleHttp\HandlerStack;
+use GuzzleHttp\Promise\FulfilledPromise;
+use GuzzleHttp\Psr7\Response;
 use Illuminate\Support\Facades\Cache;
 use Native\Api\Client\Asgard\AsgardClient;
 use Native\Api\Client\Asgard\Security\ContentDigest;
@@ -274,7 +278,63 @@ it('refuses an answer that is not a fragments map', function (string $plaintext)
     'an empty map' => ['{"protocol":1,"fragments":{}}'],
     'a bare fragment for a part' => ['{"protocol":1,"fragments":{"stats":{"type":"text"}}}'],
     'a hint that is a string' => ['{"protocol":1,"fragments":{"stats":{"fragment":{}}},"refresh":["app.inbox"]}'],
+    'chrome that is a list' => ['{"protocol":1,"delta":{},"fragments":{"stats":{"fragment":{},"chrome":["a"]}}}'],
+    'wrong protocol version' => ['{"protocol":2,"delta":{},"fragments":{"stats":{"fragment":{}}}}'],
+    'missing protocol version' => ['{"delta":{},"fragments":{"stats":{"fragment":{}}}}'],
 ]);
+
+it('sends empty state as a JSON object on render, call and upload', function () {
+    $file = tempnam(sys_get_temp_dir(), 'midgard-empty-state-');
+    file_put_contents($file, 'abc');
+
+    try {
+        expect($this->client->render(renderBody(['state' => []])))->toMatchArray(['ok' => true])
+            ->and($this->client->callMethod(['protocol' => 1, 'component' => 'app.home', 'method' => 'roll', 'args' => [], 'state' => []]))->toMatchArray(['ok' => true])
+            ->and($this->client->upload([
+                'protocol' => 1, 'component' => 'app.home', 'method' => 'save', 'args' => [], 'state' => [],
+                'filename' => 'a.txt', 'mime' => 'text/plain', 'size' => 3,
+            ], $file))->toMatchArray(['ok' => true]);
+
+        expect($this->server->requests[0]['raw'])->toContain('"state":{}')
+            ->and($this->server->requests[1]['raw'])->toContain('"state":{}')
+            ->and($this->server->requests[2]['raw'])->toContain('"state":{}');
+    } finally {
+        @unlink($file);
+    }
+});
+
+it('never retries a 419 whose signature failed verification', function () {
+    $config = $this->config + ['elements' => []];
+    $client = AsgardClient::make($config, $this->server->client());
+    $client->render(renderBody());
+
+    $attempts = 0;
+    $mock = new Client(['handler' => HandlerStack::create(function () use (&$attempts) {
+        $attempts++;
+
+        return new FulfilledPromise(new Response(
+            419,
+            ['Signature' => 'asgard=:'.base64_encode(str_repeat('x', 32)).':', 'Signature-Input' => 'asgard=()'],
+            'tampered',
+        ));
+    }), 'http_errors' => false]);
+
+    $tampered = AsgardClient::make($config, $mock);
+    $result = $tampered->render(renderBody());
+
+    expect($result['ok'])->toBeFalse()
+        ->and($result['status'])->toBe(419)
+        ->and($result['error'])->toContain('response failed verification')
+        ->and($attempts)->toBe(1)
+        ->and($this->server->handshakes)->toBe(1);
+});
+
+it('refuses a cached part when Asgard-Cache: invalidate is present', function () {
+    $this->server->cacheHeader = 'invalidate';
+    $this->server->plaintext = '{"protocol":1,"delta":{},"fragments":{"stats":{"cached":true}}}';
+
+    expect($this->client->render(renderBody()))->toBe(['ok' => false, 'status' => 200, 'error' => 'bad response']);
+});
 
 it('hands back a too_many_regions refusal with its status and error', function () {
     $this->server->plaintext = null;

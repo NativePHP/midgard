@@ -486,6 +486,23 @@ it('reports a fragment the client cannot render instead of throwing out of deliv
     expect(ServerRegion::hasFragment('sales-summary'))->toBeFalse();
 });
 
+it('refuses a delta prop whose type does not fit instead of aborting delivery', function () {
+    $server = Asgard::fakeServerTransport();
+
+    $screen = Native::test(ServerMethodScreen::class)->tap('Refresh');
+
+    $server->resolve(
+        delta: ['total' => ['not-a-string'], 'note' => 'kept'],
+        fragments: ['sales-summary' => ['fragment' => ['type' => 'text', 'props' => ['text' => 'Updated']]]],
+    );
+
+    expect($screen->get('completions'))->toBe(1)
+        ->and($screen->get('total'))->toBe('—')
+        ->and($screen->get('note'))->toBe('kept');
+
+    $screen->wait()->assertSee('Updated');
+});
+
 // ── Shape of the response object (§7) ───────────────
 
 it('describes the outcome on the response handed to the closure', function () {

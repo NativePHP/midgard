@@ -407,10 +407,13 @@ class ServerMethods
                 code: is_int($code) || is_string($code) ? $code : null,
             ));
 
-            // An HTTP status means the server answered. Anything else is
-            // the network's (a native error code, or none).
+            // An HTTP status means the server answered unless the transport
+            // classified the failure explicitly (such as `invalid`).
             $status = is_int($code) && $code >= 100 ? $code : null;
-            static::fireFailed($entry['method'], $entry['address'], $status === null ? ServerRegion::NETWORK : ServerRegion::SERVER, $status, $id, $error);
+            $reason = is_string($payload['reason'] ?? null)
+                ? $payload['reason']
+                : ($status === null ? ServerRegion::NETWORK : ServerRegion::SERVER);
+            static::fireFailed($entry['method'], $entry['address'], $reason, $status, $id, $error);
 
             return true;
         }
@@ -894,7 +897,18 @@ class ServerMethods
             //
             // A value the prop already holds is not written again.
             if (static::fingerprint($value) !== $current) {
-                $writable[$prop]->setValue($component, $value);
+                try {
+                    $writable[$prop]->setValue($component, $value);
+                } catch (\TypeError) {
+                    NativeRouter::debugLog(
+                        'Asgard: delta prop ['.$prop.'] has the wrong type for '.$component::class.' — ignored.'
+                    );
+
+                    $refused[$prop] = $value;
+
+                    continue;
+                }
+
                 $changed = true;
             }
 

@@ -1,8 +1,10 @@
 <?php
 
+use Illuminate\Support\Facades\Event;
 use Native\Api\Client\Asgard\AsgardClient;
 use Native\Api\Client\Asgard\AsgardServiceProvider;
 use Native\Api\Client\Asgard\Contracts\ServerTransport;
+use Native\Api\Client\Asgard\Events\ServerActionFailed;
 use Native\Api\Client\Asgard\HttpServerTransport;
 use Native\Api\Client\Asgard\ServerRequest;
 use Native\Api\Client\Asgard\ServerResponse;
@@ -240,23 +242,30 @@ it('reports a lane that cannot start through deliver, before send returns', func
 
 // ── Failures ────────────────────────────────────────
 
-it('maps a failed answer to a code the device reads as a reason', function (mixed $result, ?int $code) {
+it('maps a failed answer to a code the device reads as a reason', function (mixed $result, ?int $code, string $reason) {
+    $events = [];
+    Event::listen(ServerActionFailed::class, function ($event) use (&$events) {
+        $events[] = $event;
+    });
+
     [, $id] = callInFlight();
 
     HttpServerTransport::answered($id, $result, 'https://a.test/_asgard/call', 'roll');
 
     expect(onlyResponse()->id)->toBe($id)
         ->and(onlyResponse()->ok)->toBeFalse()
-        ->and(onlyResponse()->code)->toBe($code);
+        ->and(onlyResponse()->code)->toBe($code)
+        ->and($events)->toHaveCount(1)
+        ->and($events[0]->reason)->toBe($reason);
 })->with([
-    'no response' => [['ok' => false, 'status' => 0, 'error' => 'cURL error 28'], null],
-    'a handshake that got nothing' => [['ok' => false, 'status' => 0, 'error' => 'Handshake failed: timeout'], null],
-    'a server error' => [['ok' => false, 'status' => 500, 'error' => 'invalid_delta'], 500],
-    'a 419 after its retry' => [['ok' => false, 'status' => 419, 'error' => 'session_expired'], 419],
-    'a signed 404' => [['ok' => false, 'status' => 404, 'error' => 'unknown_method'], 404],
-    'failed verification' => [['ok' => false, 'status' => 200, 'error' => 'response failed verification: bad signature'], 200],
-    'not a call answer' => [['ok' => false, 'status' => 200, 'error' => 'bad response'], 200],
-    'not an array at all' => [null, null],
+    'no response' => [['ok' => false, 'status' => 0, 'error' => 'cURL error 28'], null, 'network'],
+    'a handshake that got nothing' => [['ok' => false, 'status' => 0, 'error' => 'Handshake failed: timeout'], null, 'network'],
+    'a server error' => [['ok' => false, 'status' => 500, 'error' => 'invalid_delta'], 500, 'server'],
+    'a 419 after its retry' => [['ok' => false, 'status' => 419, 'error' => 'session_expired'], 419, 'server'],
+    'a signed 404' => [['ok' => false, 'status' => 404, 'error' => 'unknown_method'], 404, 'server'],
+    'failed verification' => [['ok' => false, 'status' => 200, 'error' => 'response failed verification: bad signature'], 200, 'invalid'],
+    'not a call answer' => [['ok' => false, 'status' => 200, 'error' => 'bad response'], 200, 'invalid'],
+    'not an array at all' => [null, null, 'network'],
 ]);
 
 it('reports a call that never came back as a network failure', function () {
