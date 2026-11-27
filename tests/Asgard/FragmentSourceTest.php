@@ -414,6 +414,11 @@ it('derives the same subscription id from the same state, whatever its key order
         ->not->toBe(ServerRegion::subscriptionId('a.c', ['x' => 1, 'y' => ['q' => 1, 'p' => [2, 1]]]));
 });
 
+it('derives the same subscription id for equivalent RFC 8785 states', function () {
+    expect(ServerRegion::subscriptionId('a.b', ['n' => 1, 'z' => 0, "\u{fb33}" => 1, "\u{1f600}" => 2]))
+        ->toBe(ServerRegion::subscriptionId('a.b', ["\u{1f600}" => 2.0, 'z' => -0.0, 'n' => 1.0, "\u{fb33}" => 1.0]));
+});
+
 it('hands over changes that land together in one watch() call', function () {
     $source = Asgard::fakeFragmentSource();
 

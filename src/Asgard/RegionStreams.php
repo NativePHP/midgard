@@ -402,9 +402,14 @@ class RegionStreams
         return $keyed;
     }
 
-    /** The set without versions, for telling whether it changed. */
+    /** The set without versions and with canonical states (§5.1), for telling whether it changed. */
     protected static function shape(array $subscriptions): array
     {
-        return array_map(fn (array $s) => array_diff_key($s, ['versions' => true]), $subscriptions);
+        return array_map(static function (array $s): array {
+            $shape = array_diff_key($s, ['versions' => true]);
+            $shape['state'] = CanonicalState::encode((object) $s['state']);
+
+            return $shape;
+        }, $subscriptions);
     }
 }

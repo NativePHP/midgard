@@ -664,3 +664,9 @@ it('declares cached copies on a call that asks for regions', function () {
     $server->resolve(fragments: ['stats' => ['cached' => true]]);
     cachedFrame($screen)->assertSee('Stats from the server');
 });
+
+it('keys equivalent RFC 8785 states identically and skips uncanonicalizable states', function () {
+    expect(statsKey(['n' => 1, 'z' => 0, "\u{fb33}" => 1, "\u{1f600}" => 2]))
+        ->toBe(statsKey(["\u{1f600}" => 2.0, 'z' => -0.0, 'n' => 1.0, "\u{fb33}" => 1.0]))
+        ->and(statsKey(['bad' => INF]))->toBeNull();
+});
