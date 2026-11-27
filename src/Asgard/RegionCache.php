@@ -79,12 +79,16 @@ final class RegionCache
             return null;
         }
 
-        $canonical = json_encode(
-            [rtrim($base, '/'), $component, $region, self::canonical($state)],
-            JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION,
-        );
+        try {
+            $canonical = json_encode(
+                [rtrim($base, '/'), $component, $region, CanonicalState::encode((object) $state)],
+                JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR,
+            );
+        } catch (\Throwable) {
+            return null;
+        }
 
-        return self::PREFIX.self::generation().':'.hash('sha256', (string) $canonical);
+        return self::PREFIX.self::generation().':'.hash('sha256', $canonical);
     }
 
     /**
@@ -214,21 +218,5 @@ final class RegionCache
 
             return null;
         }
-    }
-
-    /** Assoc arrays with sorted keys, all the way down, so equal state hashes equally. */
-    protected static function canonical(mixed $value): mixed
-    {
-        if (! is_array($value)) {
-            return $value;
-        }
-
-        $value = array_map(self::canonical(...), $value);
-
-        if (! array_is_list($value)) {
-            ksort($value, SORT_STRING);
-        }
-
-        return $value;
     }
 }

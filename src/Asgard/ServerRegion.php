@@ -2157,9 +2157,12 @@ class ServerRegion
      */
     public static function subscriptionId(string $component, array $state): string
     {
-        $canonical = json_encode([$component, static::canonical($state)], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION);
+        $canonical = json_encode(
+            [$component, CanonicalState::encode((object) $state)],
+            JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR,
+        );
 
-        return substr(hash('sha256', (string) $canonical), 0, 16);
+        return substr(hash('sha256', $canonical), 0, 16);
     }
 
     /**
@@ -3189,22 +3192,6 @@ class ServerRegion
     protected static function answered(): \WeakMap
     {
         return static::$answered ??= new \WeakMap;
-    }
-
-    /** Assoc arrays with sorted keys, all the way down, so equal state hashes equally. */
-    protected static function canonical(mixed $value): mixed
-    {
-        if (! is_array($value)) {
-            return $value;
-        }
-
-        $value = array_map(static::canonical(...), $value);
-
-        if (! array_is_list($value)) {
-            ksort($value, SORT_STRING);
-        }
-
-        return $value;
     }
 
     /** @return \WeakMap<NativeComponent, array<string, array>> */

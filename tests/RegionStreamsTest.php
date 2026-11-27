@@ -104,6 +104,13 @@ it('does not reopen for an unchanged set, even when only versions moved', functi
     expect($this->stream->opens)->toHaveCount(1);
 });
 
+it('does not reopen when subscription state is canonical-equal across key order and numeric types', function () {
+    $this->streams->watch([sub(state: ['a' => 1, 'b' => 0])]);
+    $this->streams->watch([sub(state: ['b' => -0.0, 'a' => 1.0])]);
+
+    expect($this->stream->opens)->toHaveCount(1);
+});
+
 it('reopens when the set changes', function () {
     $this->streams->watch([sub()]);
     $this->streams->watch([sub(), sub('other', state: ['name' => 'Ada'])]);
