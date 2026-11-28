@@ -56,7 +56,7 @@ final class FragmentCallbacks extends CallbackRegistry
 
     private const PREFIX = 'asgard:';
 
-    private const CALL_PATTERN = '/^[A-Za-z_][A-Za-z0-9_]{0,99}$/';
+    private const CALL_PATTERN = '/^[A-Za-z_][A-Za-z0-9_]{0,99}$/D';
 
     /**
      * The canonical `['call', 'args', 'target']` form of a wire slot, or
@@ -102,12 +102,16 @@ final class FragmentCallbacks extends CallbackRegistry
             return null;
         }
 
-        $args = $slot['args'] ?? [];
+        if (array_key_exists('args', $slot)) {
+            $args = $slot['args'];
 
-        if (! is_array($args) || ! array_is_list($args)) {
-            $reason = '"args" must be a list';
+            if (! is_array($args) || ! array_is_list($args)) {
+                $reason = '"args" must be a list';
 
-            return null;
+                return null;
+            }
+        } else {
+            $args = [];
         }
 
         if (count($args) > self::MAX_ARGS) {
@@ -124,12 +128,16 @@ final class FragmentCallbacks extends CallbackRegistry
             }
         }
 
-        $target = $slot['target'] ?? self::TARGET_SERVER;
+        if (array_key_exists('target', $slot)) {
+            $target = $slot['target'];
 
-        if ($target !== self::TARGET_SERVER && $target !== self::TARGET_CLIENT) {
-            $reason = '"target" must be "server" or "client"';
+            if ($target !== self::TARGET_SERVER && $target !== self::TARGET_CLIENT) {
+                $reason = '"target" must be "server" or "client"';
 
-            return null;
+                return null;
+            }
+        } else {
+            $target = self::TARGET_SERVER;
         }
 
         return ['call' => $call, 'args' => $args, 'target' => $target];
@@ -149,12 +157,15 @@ final class FragmentCallbacks extends CallbackRegistry
             return null;
         }
 
-        $transition = $slot['transition'] ?? null;
+        $transition = null;
+        if (array_key_exists('transition', $slot)) {
+            $transition = $slot['transition'];
 
-        if ($transition !== null && ! in_array($transition, self::TRANSITIONS, true)) {
-            $reason = '"transition" must be one of '.implode(', ', self::TRANSITIONS);
+            if (! in_array($transition, self::TRANSITIONS, true)) {
+                $reason = '"transition" must be one of '.implode(', ', self::TRANSITIONS);
 
-            return null;
+                return null;
+            }
         }
 
         if ($back) {
@@ -173,12 +184,15 @@ final class FragmentCallbacks extends CallbackRegistry
             return null;
         }
 
-        $replace = $slot['replace'] ?? false;
+        $replace = false;
+        if (array_key_exists('replace', $slot)) {
+            if (! is_bool($slot['replace'])) {
+                $reason = '"replace" must be a boolean';
 
-        if (! is_bool($replace)) {
-            $reason = '"replace" must be a boolean';
+                return null;
+            }
 
-            return null;
+            $replace = $slot['replace'];
         }
 
         return ['call' => $replace ? 'replace' : 'navigate', 'args' => [$slot['navigate'], $transition], 'target' => self::TARGET_NAVIGATE];
@@ -253,7 +267,11 @@ final class FragmentCallbacks extends CallbackRegistry
             return $valid ? ['call' => $call, 'args' => $args, 'target' => $target] : null;
         }
 
-        return self::parseSlot(['call' => $call, 'args' => $args, 'target' => $target]);
+        return self::parseSlot([
+            'call' => $call,
+            ...($args === null ? [] : ['args' => $args]),
+            ...($target === null ? [] : ['target' => $target]),
+        ]);
     }
 
     /** null, a bool, an int, a finite float, a string, or a list/object of those. */

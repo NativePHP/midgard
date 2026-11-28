@@ -1,15 +1,21 @@
 <?php
 
+use Illuminate\View\View;
 use Illuminate\View\ViewException;
+use Native\Api\Client\Asgard\RegionBatch;
 use Native\Api\Client\Asgard\ServerRegion;
+use Native\Api\Client\Asgard\Testing\Asgard;
 use Native\Api\Client\Tests\Asgard\Fixtures\CounterScreen;
 use Native\Api\Client\Tests\Asgard\Fixtures\ServerRegionScreen;
+use Native\Api\Client\Tests\Asgard\Fixtures\StateScreen;
 use Native\Mobile\Edge\CallbackRegistry;
 use Native\Mobile\Edge\Element;
 use Native\Mobile\Edge\ElementRegistry;
+use Native\Mobile\Edge\NativeComponent;
 use Native\Mobile\Edge\NativeElementCollector;
 use Native\Mobile\Edge\NativeTagPrecompiler;
 use Native\Mobile\Testing\Native;
+use Native\Mobile\Testing\TestableComponent;
 
 /**
  * Blade `@server` → collector → element tree, for the region primitive
@@ -505,4 +511,146 @@ it('streams a region as a bare keyed column with the fragment under its path', f
     expect($calls[1][5])->toBe(Element::fnv1a32('/sales-summary/total'));
     expect($calls[2])->toBe(['close']);
     expect(json_encode($calls))->not->toContain('server_region');
+});
+
+it('refuses associative roots without a type and object-shaped children', function () {
+    expect(ServerRegion::applyFragment('sales-summary', ['foo' => 'bar']))->toBeFalse()
+        ->and(ServerRegion::applyFragment('sales-summary', [
+            'type' => 'column',
+            'children' => ['a' => ['type' => 'text', 'props' => ['text' => 'Hi']]],
+        ]))->toBeFalse();
+});
+
+it('refuses duplicate sibling keys across types at root and child levels', function () {
+    expect(ServerRegion::applyFragment('sales-summary', [
+        ['type' => 'text', 'key' => 7, 'props' => ['text' => 'One']],
+        ['type' => 'text', 'key' => '7', 'props' => ['text' => 'Two']],
+    ]))->toBeFalse()
+        ->and(ServerRegion::applyFragment('sales-summary', [
+            'type' => 'column',
+            'children' => [
+                ['type' => 'text', 'key' => 7, 'props' => ['text' => 'One']],
+                ['type' => 'text', 'key' => '7', 'props' => ['text' => 'Two']],
+            ],
+        ]))->toBeFalse();
+});
+
+it('refuses a non-text child inside a text container', function () {
+    expect(ServerRegion::applyFragment('sales-summary', [
+        'type' => 'text',
+        'children' => [['type' => 'column']],
+    ]))->toBeFalse();
+});
+
+it('drops unknown core props, wrong-typed core props, and empty image sources', function () {
+    expect(ServerRegion::applyFragment('sales-summary', [
+        'type' => 'column',
+        'props' => ['class' => 'card', 'bg' => '#fff', 'ref' => 'main', 'gap' => 8, 'a11yLabel' => ['bad'], 'a11yHint' => 'Summary'],
+        'children' => [
+            [
+                'type' => 'text',
+                'key' => 't',
+                'props' => ['text' => 'Ok', 'color' => ['red'], 'fontWeight' => 'bold', 'fontSize' => 'big'],
+            ],
+            [
+                'type' => 'scroll_view',
+                'key' => 's',
+                'props' => ['axis' => 'diagonal', 'showsIndicators' => true],
+            ],
+            [
+                'type' => 'image',
+                'key' => 'i',
+                'props' => ['src' => '', 'fit' => ['cover'], 'a11yLabel' => 'Avatar'],
+            ],
+        ],
+    ]))->toBeTrue();
+
+    $tree = renderNativeView('asgard-core-props', <<<'BLADE'
+        <native:column fill>
+            @server('sales-summary')
+                <native:text>Loading…</native:text>
+            @endserver
+        </native:column>
+        BLADE);
+
+    $col = $tree->toArray(new CallbackRegistry)['children'][0]['children'][0];
+    $text = $col['children'][0];
+    $scroll = $col['children'][1];
+    $image = $col['children'][2];
+
+    expect($col['props'] ?? [])->toBe(['a11y_hint' => 'Summary'])
+        ->and($text['props'] ?? [])->toBe(['text' => 'Ok'])
+        ->and($scroll['props'] ?? [])->toBe(['shows_indicators' => true])
+        ->and($image['props'] ?? [])->toBe(['a11y_label' => 'Avatar']);
+});
+
+it('compares subscription version tokens strictly without collapsing numeric equivalents', function () {
+    $source = Asgard::fakeFragmentSource();
+    $s1 = Native::test(StateScreen::class);
+    $source->respond('stats', ['type' => 'text', 'props' => ['text' => 'S1']], version: '01');
+    Closure::bind(function () {
+        $this->startInteraction();
+
+        return $this->afterInteraction();
+    }, $s1, TestableComponent::class)();
+
+    $s2 = Native::test(StateScreen::class);
+    $source->respond('stats', ['type' => 'text', 'props' => ['text' => 'S2']], version: '1');
+    Closure::bind(function () {
+        $this->startInteraction();
+
+        return $this->afterInteraction();
+    }, $s2, TestableComponent::class)();
+
+    $subs = ServerRegion::subscriptions();
+    expect($subs)->toHaveCount(1)
+        ->and($subs[0]['versions'])->not->toHaveKey('stats');
+
+    $s1->instance()->refreshServerRegions('stats');
+    Closure::bind(function () {
+        $this->startInteraction();
+
+        return $this->afterInteraction();
+    }, $s1, TestableComponent::class)();
+
+    expect($source->respond('stats', ['type' => 'text', 'props' => ['text' => 'S1b']], version: '1'))->toBeTrue();
+    Closure::bind(function () {
+        $this->startInteraction();
+
+        return $this->afterInteraction();
+    }, $s1, TestableComponent::class)();
+
+    expect(ServerRegion::subscriptions()[0]['versions']['stats'] ?? null)->toBe('1');
+});
+
+it('does not issue refresh hints when deliverAction misses its own region and the owner is gone', function () {
+    $source = Asgard::fakeFragmentSource();
+    $screen = Native::test(StateScreen::class);
+    $source->respondToBatch(fragments: [
+        'stats' => [
+            'fragment' => [
+                'type' => 'pressable',
+                'key' => 'go',
+                'on_press' => ['call' => 'go', 'args' => []],
+                'children' => [['type' => 'text', 'props' => ['text' => 'Go']]],
+            ],
+        ],
+        'feed' => ['fragment' => ['type' => 'text', 'props' => ['text' => 'Feed']]],
+    ]);
+    Closure::bind(function () {
+        $this->startInteraction();
+
+        return $this->afterInteraction();
+    }, $screen, TestableComponent::class)();
+
+    $screen->tap('Go');
+    $action = $source->lastAction('stats');
+    $before = count($source->requests('feed'));
+
+    ServerRegion::forget($screen->instance());
+    unset($screen);
+    gc_collect_cycles();
+
+    expect(ServerRegion::deliverBatch(new RegionBatch([$action]), fragments: [], refresh: ['feed']))->toBe(0)
+        ->and($source->requests('feed'))->toHaveCount($before);
 });
