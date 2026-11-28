@@ -102,9 +102,13 @@ final class ServerChrome
         $action = self::object($action, $path);
         self::id($action['id'] ?? null, "{$path}.id");
 
-        if (($action['divider'] ?? false) === true) {
-            // A divider has only an id. Anything else on it is ignored (§5.3).
-            return ['id' => $action['id'], 'divider' => true];
+        if (array_key_exists('divider', $action)) {
+            $divider = self::bool($action['divider'], "{$path}.divider");
+
+            if ($divider === true) {
+                // A divider has only an id. Anything else on it is ignored (§5.3).
+                return ['id' => $action['id'], 'divider' => true];
+            }
         }
 
         $clean = [];
@@ -185,7 +189,7 @@ final class ServerChrome
     private static function logo(mixed $logo, string $path): array
     {
         $logo = self::object($logo, $path);
-        $height = $logo['height'] ?? 28;
+        $height = array_key_exists('height', $logo) ? $logo['height'] : 28;
 
         if (! is_int($height) && ! is_float($height) || $height <= 0 || $height > 200) {
             self::fail("{$path}.height must be a number up to 200");
@@ -197,10 +201,12 @@ final class ServerChrome
     /** A URL the device loads: absolute https (or http under app.debug), never an app asset path. */
     private static function media(mixed $value, string $path): string
     {
-        $value = self::string($value, $path);
+        if (! is_string($value) || $value === '') {
+            self::fail("{$path} must not be empty");
+        }
 
-        if ($value === '' || ($problem = MediaUrl::problem($value)) !== null) {
-            self::fail("{$path} ".($problem ?? 'must not be empty'));
+        if (($problem = MediaUrl::problem($value)) !== null) {
+            self::fail("{$path} {$problem}");
         }
 
         return $value;
@@ -239,7 +245,7 @@ final class ServerChrome
             self::fail("{$path}.id must be a lowercase id");
         }
 
-        $configuration = $presentation['configuration'] ?? [];
+        $configuration = array_key_exists('configuration', $presentation) ? $presentation['configuration'] : [];
 
         if (! is_array($configuration) || ($configuration !== [] && array_is_list($configuration))) {
             self::fail("{$path}.configuration must be an object");

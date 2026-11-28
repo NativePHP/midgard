@@ -331,9 +331,13 @@ it('fetches the region whole when the patch does not apply', function (Closure $
     'too many nodes' => [fn ($t) => ($t->feedPatch)(['op' => 'prepend', 'target' => 'items', 'nodes' => array_map(feedItem(...), range(100, 200))])],
     'a keep of 0' => [fn ($t) => ($t->feedPatch)(['op' => 'prepend', 'target' => 'items', 'nodes' => [feedItem(9)], 'keep' => 0])],
     'a keep that is a string' => [fn ($t) => ($t->feedPatch)(['op' => 'prepend', 'target' => 'items', 'nodes' => [feedItem(9)], 'keep' => '3'])],
+    'keep explicitly null' => [fn ($t) => ($t->feedPatch)(['op' => 'prepend', 'target' => 'items', 'nodes' => [feedItem(9)], 'keep' => null])],
     'a keep over the limit' => [fn ($t) => ($t->feedPatch)(['op' => 'prepend', 'target' => 'items', 'nodes' => [feedItem(9)], 'keep' => 100001])],
+    'empty nodes' => [fn ($t) => ($t->feedPatch)(['op' => 'prepend', 'target' => 'items', 'nodes' => []])],
     'remove without keys' => [fn ($t) => ($t->feedPatch)(['op' => 'remove', 'target' => 'items'])],
+    'empty keys' => [fn ($t) => ($t->feedPatch)(['op' => 'remove', 'target' => 'items', 'keys' => []])],
     'remove with a key that is not a string' => [fn ($t) => ($t->feedPatch)(['op' => 'remove', 'target' => 'items', 'keys' => [['1']]])],
+    'duplicate sibling keys in patch nodes' => [fn ($t) => ($t->feedPatch)(['op' => 'prepend', 'target' => 'items', 'nodes' => [feedItem(7), feedItem('7')]])],
     'a node of an unknown type' => [fn ($t) => ($t->feedPatch)(['op' => 'prepend', 'target' => 'items', 'nodes' => [['type' => 'marquee']]])],
     'a node with no type' => [fn ($t) => ($t->feedPatch)(['op' => 'prepend', 'target' => 'items', 'nodes' => ['text']])],
     'a node with a bad media url' => [fn ($t) => ($t->feedPatch)(['op' => 'prepend', 'target' => 'items', 'nodes' => [['type' => 'image', 'props' => ['src' => 'javascript:alert(1)']]]])],
@@ -940,4 +944,76 @@ it('repaints instead when a new child has no key', function () {
 
     expect(ServerRegion::repaintPending())->toBeTrue()
         ->and($screen->hasPendingOps())->toBeFalse();
+});
+
+it('rejects a patch that puts a non-text child inside a text container and fetches whole', function () {
+    $source = Asgard::fakeFragmentSource();
+    $screen = Native::test(PatchFeedScreen::class);
+    $source->respond('feed', [
+        'type' => 'text',
+        'key' => 'rich',
+        'children' => [['type' => 'text', 'key' => 'a', 'props' => ['text' => 'Hi']]],
+    ], 'v1');
+    nextFrame($screen);
+
+    ($this->feedPatch)(['op' => 'append', 'target' => 'rich', 'nodes' => [['type' => 'column', 'key' => 'b']]]);
+    nextFrame($screen);
+
+    $source->assertRequested('feed', 2);
+});
+
+it('fetches again with push when replaying held patches fails on a landed fragment', function () {
+    $screen = feedScreen();
+    $source = Asgard::fakeFragmentSource();
+
+    ($this->feedPatch)(['op' => 'prepend', 'target' => 'items', 'nodes' => [feedItem(9)]], 'v0', 'v2');
+    nextFrame($screen);
+    ($this->feedPatch)(['op' => 'prepend', 'target' => 'items', 'nodes' => [feedItem(10)]], 'v2', 'v3');
+    ($this->feedPatch)(['op' => 'prepend', 'target' => 'missing-list', 'nodes' => [feedItem(11)]], 'v3', 'v4');
+
+    $source->respond('feed', feedTree([9, 1, 2, 3]), 'v2');
+    nextFrame($screen);
+
+    expect(itemsOn($screen))->toBe([10, 9, 1, 2, 3]);
+    $source->assertRequested('feed', 3);
+    expect($source->lastRequest('feed')->reason)->toBe('push');
+});
+
+it('forgets held patches when the fallback fetch times out so subsequent patches ask cleanly', function () {
+    config(['midgard.asgard.region_timeout' => 5]);
+    $screen = feedScreen();
+    $source = Asgard::fakeFragmentSource();
+
+    // Version mismatch triggers Request 2 and holds v1 -> v9 too once Request 2 is in flight.
+    ($this->feedPatch)(['op' => 'prepend', 'target' => 'items', 'nodes' => [feedItem(8)]], 'v0', 'v2');
+    nextFrame($screen);
+    ($this->feedPatch)(['op' => 'prepend', 'target' => 'items', 'nodes' => [feedItem(9)]], 'v1', 'v3');
+    $source->assertRequested('feed', 2);
+
+    // Timeout drops held patches so they never replay onto a later fresh fetch at v1.
+    Carbon::setTestNow(Carbon::now()->addSeconds(6));
+    ServerRegion::expire([$screen->instance()]);
+    nextFrame($screen);
+
+    ($this->feedPatch)(['op' => 'prepend', 'target' => 'items', 'nodes' => [feedItem(10)]], 'v4', 'v5');
+    nextFrame($screen);
+    $source->assertRequested('feed', 3);
+
+    $source->respond('feed', feedTree([1, 2, 3]), 'v1');
+    expect(itemsOn(nextFrame($screen)))->toBe([1, 2, 3]);
+});
+
+it('replays held patches when an inline action redraws the region', function () {
+    $screen = feedScreen();
+
+    // Queue a mismatching fallback + deferred v2 -> v3 patch while an inline answer lands at v2.
+    ($this->feedPatch)(['op' => 'prepend', 'target' => 'items', 'nodes' => [feedItem(9)]], 'v0', 'v2');
+    nextFrame($screen);
+    ($this->feedPatch)(['op' => 'prepend', 'target' => 'items', 'nodes' => [feedItem(10)]], 'v2', 'v3');
+
+    ServerRegion::paintInline($screen->instance(), ServerRegion::stamp(), [
+        'feed' => ['fragment' => feedTree([9, 1, 2, 3]), 'version' => 'v2'],
+    ], ['tab' => 'all']);
+
+    expect(itemsOn(nextFrame($screen)))->toBe([10, 9, 1, 2, 3]);
 });

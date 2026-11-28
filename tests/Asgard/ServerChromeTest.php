@@ -80,3 +80,46 @@ it('still refuses an unknown member in a search query slot', function () {
     ]]], $reason))->toBeNull()
         ->and($reason)->toContain('unknown keys');
 });
+
+it('refuses non-bool divider and explicit null on optional numbers or objects', function (array $chrome, string $fragment) {
+    expect(ServerChrome::parse($chrome, $reason))->toBeNull()
+        ->and($reason)->toContain($fragment);
+})->with([
+    'non-bool divider' => [['nav_bar' => ['actions' => [
+        ['id' => 'a', 'divider' => 1, 'on_press' => ['call' => 'share', 'args' => []]],
+    ]]], 'divider'],
+    'null logo height' => [['nav_bar' => ['logo' => [
+        'src' => 'https://cdn.example.test/logo.png',
+        'height' => null,
+    ]]], 'logo.height'],
+    'null presentation configuration' => [['tab_bar' => ['presentation' => [
+        'id' => 'sheet',
+        'configuration' => null,
+    ]]], 'configuration'],
+]);
+
+it('accepts a 1500-byte https media url on logo and actions and refuses over 2048 bytes', function () {
+    $good = 'https://cdn.example.test/'.str_repeat('a', 1500 - strlen('https://cdn.example.test/'));
+    $tooLong = 'https://cdn.example.test/'.str_repeat('a', 2049 - strlen('https://cdn.example.test/'));
+
+    $parsed = ServerChrome::parse([
+        'nav_bar' => [
+            'logo' => ['src' => $good],
+            'actions' => [[
+                'id' => 'a',
+                'image' => $good,
+                'on_press' => ['call' => 'share', 'args' => []],
+            ]],
+        ],
+    ], $reason);
+
+    expect($parsed['nav_bar']['logo']['src'] ?? null)->toBe($good)
+        ->and($parsed['nav_bar']['actions'][0]['image'] ?? null)->toBe($good);
+
+    expect(ServerChrome::parse(['nav_bar' => ['logo' => ['src' => $tooLong]]], $reason))->toBeNull();
+    expect(ServerChrome::parse(['nav_bar' => ['actions' => [[
+        'id' => 'a',
+        'image' => $tooLong,
+        'on_press' => ['call' => 'share', 'args' => []],
+    ]]]], $reason))->toBeNull();
+});

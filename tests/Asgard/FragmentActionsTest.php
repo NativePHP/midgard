@@ -264,6 +264,9 @@ dataset('bad callback slots', [
     'an arg nested five deep' => [['call' => 'shuffle', 'args' => [[[[[[1]]]]]]]],
     'an object in args' => [['call' => 'shuffle', 'args' => [new stdClass]]],
     'a non-finite float in args' => [['call' => 'shuffle', 'args' => [INF]]],
+    'a call with a trailing newline' => [['call' => "shuffle\n"]],
+    'args explicitly null' => [['call' => 'shuffle', 'args' => null]],
+    'target explicitly null' => [['call' => 'shuffle', 'target' => null]],
     'an unknown target' => [['call' => 'shuffle', 'target' => 'elsewhere']],
     'an unknown key' => [['call' => 'shuffle', 'id' => 7]],
 ]);

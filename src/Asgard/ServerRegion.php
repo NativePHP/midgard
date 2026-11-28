@@ -648,7 +648,7 @@ class ServerRegion
             return static::deliverTo($owner, $entry, $request, $state, $tree, $chrome, $version, $madeAt, $maxAge, $invalidate);
         } finally {
             if ($fragments !== []) {
-                static::paintInline($owner, $request->id, $fragments, $state, $invalidate, $request->state);
+                static::paintInline($owner, $request->id, $fragments, $state, $invalidate, $request->state, $request->cache);
             }
 
             if ($refresh !== []) {
@@ -712,7 +712,7 @@ class ServerRegion
             return false;
         }
 
-        static::applyChrome($owner, $chrome);
+        $chrome = static::applyChrome($owner, $chrome);
         static::answer($owner, $region, $state, $version);
         static::remember($owner, $region, $state, $tree, $chrome, $version, $madeAt, $maxAge);
         static::replayDeferred($owner, $region, $state);
@@ -776,6 +776,15 @@ class ServerRegion
             unset(static::$retries[$request->id]);
             static::defer($owner, $entry['region'], null);
 
+            if ($invalidate || ! isset($request->cache[$entry['region']])) {
+                $why = $invalidate
+                    ? 'the server answered cached on an invalidated response'
+                    : 'the server answered cached for a region the request did not declare';
+                static::fail($owner, $entry['region'], $request, self::INVALID, null, $why);
+
+                return false;
+            }
+
             if (static::keepCached($owner, $entry['region'], $request->state, $state)) {
                 return true;
             }
@@ -789,7 +798,7 @@ class ServerRegion
             return false;
         } finally {
             if ($fragments !== []) {
-                static::paintInline($owner, $request->id, $fragments, $state, $invalidate, $request->state);
+                static::paintInline($owner, $request->id, $fragments, $state, $invalidate, $request->state, $request->cache);
             }
 
             if ($refresh !== []) {
@@ -1029,12 +1038,14 @@ class ServerRegion
                 continue;
             }
 
-            unset(static::$pending[$id]);
+            unset(static::$pending[$id], static::$retries[$id]);
 
             // A superseded request's answer would have been dropped anyway.
             if (((static::requested()[$owner] ?? [])[$entry['region']] ?? null) !== $id) {
                 continue;
             }
+
+            static::defer($owner, $entry['region'], null);
 
             $request = $entry['request'];
             $message = 'no answer within '.round(($entry['deadline'] - $entry['sent']) / 1000, 3).' seconds';
@@ -1154,9 +1165,9 @@ class ServerRegion
 
         foreach (static::subscribers($component, $state, $region) as $owner) {
             if (static::applyFragment($region, $tree, $owner)) {
-                static::applyChrome($owner, $chrome);
+                $acceptedChrome = static::applyChrome($owner, $chrome);
                 static::answer($owner, $region, $state, $version);
-                static::remember($owner, $region, $state, $tree, $chrome, $version, $madeAt, $maxAge);
+                static::remember($owner, $region, $state, $tree, $acceptedChrome, $version, $madeAt, $maxAge);
                 static::replayDeferred($owner, $region, $state);
                 $painted++;
             }
@@ -1310,8 +1321,8 @@ class ServerRegion
         if ($op === 'remove') {
             $keys = $patch['keys'] ?? null;
 
-            if (! is_array($keys) || ! array_is_list($keys) || count($keys) > self::PATCH_MAX_KEYS) {
-                $reason = 'its keys are not a list of at most '.self::PATCH_MAX_KEYS;
+            if (! is_array($keys) || ! array_is_list($keys) || $keys === [] || count($keys) > self::PATCH_MAX_KEYS) {
+                $reason = 'its keys are not a non-empty list of at most '.self::PATCH_MAX_KEYS;
 
                 return null;
             }
@@ -1338,18 +1349,21 @@ class ServerRegion
 
         $nodes = $patch['nodes'] ?? null;
 
-        if (! is_array($nodes) || ! array_is_list($nodes) || count($nodes) > self::PATCH_MAX_NODES) {
-            $reason = 'its nodes are not a list of at most '.self::PATCH_MAX_NODES;
+        if (! is_array($nodes) || ! array_is_list($nodes) || $nodes === [] || count($nodes) > self::PATCH_MAX_NODES) {
+            $reason = 'its nodes are not a non-empty list of at most '.self::PATCH_MAX_NODES;
 
             return null;
         }
 
-        $keep = $patch['keep'] ?? null;
+        $keep = null;
+        if (array_key_exists('keep', $patch)) {
+            $keep = $patch['keep'];
 
-        if ($keep !== null && (! is_int($keep) || $keep < 1 || $keep > self::PATCH_MAX_KEEP)) {
-            $reason = 'its keep is not a whole number from 1 to '.self::PATCH_MAX_KEEP;
+            if (! is_int($keep) || $keep < 1 || $keep > self::PATCH_MAX_KEEP) {
+                $reason = 'its keep is not a whole number from 1 to '.self::PATCH_MAX_KEEP;
 
-            return null;
+                return null;
+            }
         }
 
         return ['op' => $op, 'target' => $target, 'nodes' => $nodes, 'keep' => $keep];
@@ -1396,6 +1410,11 @@ class ServerRegion
             return "no node has the key [{$op['target']}]";
         }
 
+        $targetNode = $nodes;
+        foreach ($path as $level => $index) {
+            $targetNode = $level === 0 ? $nodes[$index] : $targetNode['children'][$index];
+        }
+
         $add = [];
 
         if ($op['op'] !== 'remove') {
@@ -1403,7 +1422,7 @@ class ServerRegion
             $depth = count($path) + 1;
             $add = array_map(fn ($node) => is_array($node) ? $node : null, $op['nodes']);
 
-            if (($problem = static::rejectionReason($add, $depth)) !== null) {
+            if (($problem = static::rejectionReason($add, $depth, ($targetNode['type'] ?? null) === 'text')) !== null) {
                 return "a node cannot be rendered: {$problem}";
             }
 
@@ -1706,13 +1725,16 @@ class ServerRegion
         $held = (static::answered()[$owner] ?? [])[$region]['version'] ?? null;
         $applied = false;
 
-        foreach ($patches as [$from, $version, $op]) {
+        foreach ($patches as $index => [$from, $version, $op]) {
             if ($from !== $held) {
                 continue;
             }
 
             if (($why = static::applyPatch($owner, $region, $held, $from, $op)) !== null) {
-                NativeRouter::debugLog("Asgard: a held patch for [{$region}] did not apply to the fetched region ({$why}).");
+                NativeRouter::debugLog("Asgard: a held patch for [{$region}] did not apply to the fetched region ({$why}). Fetching the region instead.");
+                static::refresh($owner, $region, push: true);
+                static::defer($owner, $region, array_slice($patches, $index + 1));
+                static::$repaint = true;
 
                 break;
             }
@@ -1822,7 +1844,7 @@ class ServerRegion
      *
      * @return array<string, string>
      */
-    public static function paintInline(NativeComponent $owner, string $id, array $fragments, array $state, bool $invalidate = false, ?array $sent = null): array
+    public static function paintInline(NativeComponent $owner, string $id, array $fragments, array $state, bool $invalidate = false, ?array $sent = null, ?array $declaredCache = null): array
     {
         $refused = [];
         $sequence = static::sequenceOf($id);
@@ -1834,6 +1856,7 @@ class ServerRegion
 
             $reason = match (true) {
                 ! $cached && (! is_array($part) || ! array_key_exists('fragment', $part) || ! (is_array($part['fragment']) || is_string($part['fragment']))) => 'it is not a fragment',
+                $cached && ($invalidate || ($declaredCache !== null && ! isset($declaredCache[$region]))) => 'cached cannot be used for this region',
                 $latest === null => 'this component never drew it',
                 $latest !== $id && static::sequenceOf($latest) > $sequence => 'a newer request for it went out',
                 default => null,
@@ -1886,9 +1909,10 @@ class ServerRegion
             $requested[$region] = $id;
             static::requested()[$owner] = $requested;
 
-            static::applyChrome($owner, $chrome);
+            $chrome = static::applyChrome($owner, $chrome);
             static::answer($owner, $region, $state, $version);
             static::remember($owner, $region, $state, $part['fragment'], $chrome, $version, $madeAt, $maxAge);
+            static::replayDeferred($owner, $region, $state);
         }
 
         return $refused;
@@ -1966,10 +1990,10 @@ class ServerRegion
         static::failed($action, self::INVALID, null, 'the answer has no fragment for this region');
 
         if ($owner !== null && $others !== []) {
-            static::paintInline($owner, $action->id, $others, $state, $invalidate, $action->state);
+            static::paintInline($owner, $action->id, $others, $state, $invalidate, $action->state, $action->cache);
         }
 
-        if ($refresh !== []) {
+        if ($owner !== null && $refresh !== []) {
             static::hints($refresh);
         }
 
@@ -2200,10 +2224,21 @@ class ServerRegion
 
             $versions = [];
             foreach ($regions as $region) {
-                $held = array_unique($tokens[$id][$region], SORT_REGULAR);
+                $held = [];
+                foreach ($tokens[$id][$region] as $token) {
+                    if (is_string($token)) {
+                        $held['t:'.$token] = $token;
+                    } else {
+                        $held['*'] = null;
+                    }
+                }
 
-                if (count($held) === 1 && is_string($held[array_key_first($held)])) {
-                    $versions[$region] = $held[array_key_first($held)];
+                if (count($held) === 1) {
+                    $only = $held[array_key_first($held)];
+
+                    if (is_string($only)) {
+                        $versions[$region] = $only;
+                    }
                 }
             }
 
@@ -2696,9 +2731,9 @@ class ServerRegion
                 continue;
             }
 
-            static::applyChrome($owner, $entry['chrome']);
+            $chrome = static::applyChrome($owner, $entry['chrome']);
             static::answer($owner, $entry['region'], $entry['state'], $entry['version']);
-            static::remember($owner, $entry['region'], $entry['state'], $entry['tree'], $entry['chrome'], $entry['version'], $entry['made_at'], $entry['max_age']);
+            static::remember($owner, $entry['region'], $entry['state'], $entry['tree'], $chrome, $entry['version'], $entry['made_at'], $entry['max_age']);
             static::replayDeferred($owner, $entry['region'], $entry['state']);
         }
 
@@ -2968,11 +3003,13 @@ class ServerRegion
         return static::registryFor($region, $owner) ?? static::newRegistry($region, $owner, '');
     }
 
-    protected static function applyChrome(NativeComponent $owner, ?array $chrome): void
+    protected static function applyChrome(NativeComponent $owner, ?array $chrome): ?array
     {
-        if ($chrome !== null && $owner instanceof ServerScreen) {
-            $owner->receiveChrome($chrome);
+        if ($chrome === null || ! $owner instanceof ServerScreen) {
+            return $chrome;
         }
+
+        return $owner->receiveChrome($chrome) ? $chrome : null;
     }
 
     // ── Internals ────────────────────────────────────
@@ -3572,7 +3609,7 @@ class ServerRegion
         foreach ($nodes as $node) {
             $type = (string) $node['type'];
             $attrs = static::attrsFor($node);
-            $children = static::normalize($node['children'] ?? []);
+            $children = static::normalize($node['children'] ?? []) ?? [];
 
             if ($children === []) {
                 NativeElementCollector::leaf($type, $attrs);
@@ -3602,15 +3639,8 @@ class ServerRegion
      */
     protected static function attrsFor(array $node): array
     {
-        $attrs = is_array($node['props'] ?? null) ? $node['props'] : [];
-
-        foreach (array_keys($attrs) as $key) {
-            $key = (string) $key;
-
-            if (str_starts_with($key, '_') || str_starts_with($key, 'native-') || str_starts_with($key, 'native:')) {
-                unset($attrs[$key]);
-            }
-        }
+        $type = (string) ($node['type'] ?? '');
+        $attrs = static::sanitizedProps($type, $node['props'] ?? null);
 
         if (isset($node['class']) && is_string($node['class'])) {
             $attrs['class'] = $node['class'];
@@ -3635,10 +3665,92 @@ class ServerRegion
             }
         }
 
-        // Ids are the client's (§9.1) — never take one off the wire.
-        unset($attrs['id'], $attrs['node_id']);
-
         return $attrs;
+    }
+
+    /**
+     * Drop reserved/identity keys from wire `props`, ignore props a core type
+     * does not define, and treat wrong-typed values as absent (§9.3, §9.7).
+     */
+    protected static function sanitizedProps(string $type, mixed $props): array
+    {
+        if (! is_array($props)) {
+            return [];
+        }
+
+        $clean = [];
+        $isCore = in_array($type, FragmentTypes::CORE, true);
+
+        foreach ($props as $rawKey => $value) {
+            $key = (string) $rawKey;
+
+            if (str_starts_with($key, '_') || str_starts_with($key, 'native-') || str_starts_with($key, 'native:')
+                || in_array($key, ['id', 'node_id', 'ref', 'class', 'a11y-label', 'a11y-hint'], true)) {
+                continue;
+            }
+
+            if ($key === 'a11yLabel' || $key === 'a11yHint') {
+                if (is_string($value)) {
+                    $clean[$key] = $value;
+                }
+
+                continue;
+            }
+
+            $valid = static::propValidForType($type, $key, $value);
+
+            if ($valid === null) {
+                if (! $isCore) {
+                    $clean[$key] = $value;
+                }
+
+                continue;
+            }
+
+            if ($valid) {
+                $clean[$key] = $value;
+            }
+        }
+
+        return $clean;
+    }
+
+    /** Whether a documented prop matches §9.7's type rules, or null when not listed for `$type`. */
+    protected static function propValidForType(string $type, string $key, mixed $value): ?bool
+    {
+        return match ($type) {
+            'scroll_view' => match ($key) {
+                'axis' => in_array($value, ['vertical', 'horizontal', 'both'], true),
+                'showsIndicators' => is_bool($value),
+                default => null,
+            },
+            'text' => match ($key) {
+                'text', 'color' => is_string($value),
+                'fontSize' => (is_int($value) || is_float($value)) && is_finite((float) $value),
+                'fontWeight', 'maxLines' => is_int($value),
+                'textAlign' => in_array($value, ['left', 'center', 'right'], true),
+                default => null,
+            },
+            'button' => match ($key) {
+                'label', 'labelColor' => is_string($value),
+                'disabled' => is_bool($value),
+                'fontSize' => (is_int($value) || is_float($value)) && is_finite((float) $value),
+                default => null,
+            },
+            'image' => match ($key) {
+                'src' => is_string($value) && $value !== '',
+                'fit' => in_array($value, ['contain', 'cover', 'fill', 'none'], true),
+                'tintColor', 'alt' => is_string($value),
+                default => null,
+            },
+            'list_item' => match ($key) {
+                'headline', 'supporting', 'overline', 'leadingMonogram', 'trailingText' => is_string($value),
+                'leadingAvatar', 'leadingImage' => is_string($value) && $value !== '',
+                'disabled' => is_bool($value),
+                default => null,
+            },
+            default => null,
+        };
     }
 
     /**
@@ -3681,7 +3793,8 @@ class ServerRegion
             }
 
             if (isset($node['children'])) {
-                $node['children'] = static::checkCallbacks(static::normalize($node['children']), $region, $depth + 1);
+                $children = static::normalize($node['children']) ?? [];
+                $node['children'] = static::checkCallbacks($children, $region, $depth + 1);
             }
 
             $nodes[$i] = $node;
@@ -3690,14 +3803,18 @@ class ServerRegion
         return $nodes;
     }
 
-    /** Accept a single node or a list of them; always return a list. */
-    protected static function normalize(array $tree): array
+    /** Accept a single node or a list of them; return null when an object has no `type`. */
+    protected static function normalize(array $tree): ?array
     {
         if ($tree === []) {
             return [];
         }
 
-        return isset($tree['type']) ? [$tree] : array_values($tree);
+        if (array_is_list($tree)) {
+            return $tree;
+        }
+
+        return is_string($tree['type'] ?? null) ? [$tree] : null;
     }
 
     /**
@@ -3710,13 +3827,16 @@ class ServerRegion
      *
      * A fragment may use only core types and the types this client
      * advertised in its handshake (FragmentTypes), may not nest deeper
-     * than MAX_DEPTH, and its media props must pass MediaUrl.
+     * than MAX_DEPTH, may not repeat sibling keys, may only nest text
+     * nodes under text, and its media props must pass MediaUrl.
      */
-    protected static function rejectionReason(array $nodes, int $depth = 1): ?string
+    protected static function rejectionReason(array $nodes, int $depth = 1, bool $textOnly = false): ?string
     {
         if ($nodes !== [] && $depth > self::MAX_DEPTH) {
             return 'it nests deeper than '.self::MAX_DEPTH.' levels';
         }
+
+        $keys = [];
 
         foreach ($nodes as $node) {
             if (! is_array($node) || ! isset($node['type']) || ! is_string($node['type'])) {
@@ -3724,6 +3844,20 @@ class ServerRegion
             }
 
             $type = $node['type'];
+
+            if ($textOnly && $type !== 'text') {
+                return "'text' children must be 'text' nodes";
+            }
+
+            if (isset($node['key']) && (is_string($node['key']) || is_int($node['key']))) {
+                $key = 'k:'.$node['key'];
+
+                if (isset($keys[$key])) {
+                    return "duplicate sibling key '{$node['key']}'";
+                }
+
+                $keys[$key] = true;
+            }
 
             if (($problem = FragmentTypes::problem($type)) !== null) {
                 return $problem;
@@ -3735,11 +3869,11 @@ class ServerRegion
 
             $children = $node['children'] ?? [];
 
-            if (! is_array($children)) {
+            if (! is_array($children) || ! array_is_list($children)) {
                 return "'{$type}' has children that are not a list";
             }
 
-            if (($reason = static::rejectionReason(static::normalize($children), $depth + 1)) !== null) {
+            if (($reason = static::rejectionReason($children, $depth + 1, $type === 'text')) !== null) {
                 return $reason;
             }
         }

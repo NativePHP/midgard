@@ -166,12 +166,14 @@ class ServerMethods
         $state = static::snapshot($component);
         $address = ComponentAddress::for($component);
 
+        $cache = ServerRegion::declaredCache($component, ServerRegion::stateOf($component));
+
         $request = new ServerRequest(
             component: $address,
             method: $method,
             args: $args,
             state: $state,
-            cache: ServerRegion::declaredCache($component, ServerRegion::stateOf($component)),
+            cache: $cache,
             readOnly: ComponentState::readOnly($component, $state),
             regions: static::regionsFor($component, static::renderOf($component, $method)),
         );
@@ -180,6 +182,7 @@ class ServerMethods
             $component, $method, $closure, $address, $state,
             ServerRegion::actionTimeout($component),
             fn () => static::transport()->send($request),
+            $cache,
         );
     }
 
@@ -232,6 +235,8 @@ class ServerMethods
 
         $state = static::snapshot($component);
 
+        $cache = ServerRegion::declaredCache($component, ServerRegion::stateOf($component));
+
         $request = new UploadRequest(
             component: $address,
             method: $method,
@@ -241,7 +246,7 @@ class ServerMethods
             filename: basename($real),
             mime: UploadRequest::guessMime($real),
             size: $size,
-            cache: ServerRegion::declaredCache($component, ServerRegion::stateOf($component)),
+            cache: $cache,
             readOnly: ComponentState::readOnly($component, $state),
             regions: static::regionsFor($component, $render),
         );
@@ -250,6 +255,7 @@ class ServerMethods
             $component, $method, null, $address, $state,
             static::uploadTimeout($component),
             fn () => static::uploadTransport()->upload($request),
+            $cache,
         );
     }
 
@@ -279,7 +285,7 @@ class ServerMethods
      *
      * @param  \Closure(): string  $send
      */
-    protected static function begin(NativeComponent $component, string $method, ?\Closure $closure, string $address, array $state, float $seconds, \Closure $send): ?string
+    protected static function begin(NativeComponent $component, string $method, ?\Closure $closure, string $address, array $state, float $seconds, \Closure $send, array $cache = []): ?string
     {
         // Taken as the call goes out, so regions its answer carries can be
         // ordered against region requests (ServerRegion::paintInline()).
@@ -328,6 +334,7 @@ class ServerMethods
             'timeout' => $seconds,
             'stamp' => $stamp,
             'state' => $regionState,
+            'cache' => $cache,
         ];
 
         if ($early !== null) {
@@ -931,7 +938,7 @@ class ServerMethods
         // A `{cached: true}` part's copy is still found by the state sent.
         $state = $changed ? ServerRegion::stateOf($component) : $entry['state'];
 
-        return ServerRegion::paintInline($component, $entry['stamp'], $fragments, $state, $invalidate, $entry['state']);
+        return ServerRegion::paintInline($component, $entry['stamp'], $fragments, $state, $invalidate, $entry['state'], $entry['cache'] ?? []);
     }
 
     /**

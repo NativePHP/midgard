@@ -278,6 +278,10 @@ it('asks again without declaring when the device lost the copy, and fails a seco
 it('takes a fragment after the retry as a normal answer', function () {
     $source = Asgard::fakeFragmentSource();
     $screen = Native::test(CachedRegionScreen::class);
+    $source->respond('stats', statsText('Cached before loss'), madeAt: MADE_AT);
+    $screen->instance()->refreshServerRegions('stats');
+    cachedFrame($screen);
+    RegionCache::flush();
 
     $source->respondCached('stats');
     expect($source->respond('stats', statsText('Rendered after all'), madeAt: MADE_AT))->toBeTrue();
@@ -289,15 +293,19 @@ it('asks again for a cached part of a batch or a call answer the device lost', f
     $source = Asgard::fakeFragmentSource();
     $server = Asgard::fakeServerTransport();
     $screen = Native::test(CachedRegionScreen::class);
+    $source->respond('stats', statsText('Stats'), madeAt: MADE_AT);
+
+    relaunch();
+    $screen = Native::test(CachedRegionScreen::class);
     $before = count($source->requests('stats'));
+    RegionCache::flush();
 
     $source->respondToBatch(fragments: ['stats' => ['cached' => true], 'news' => ['fragment' => statsText('News'), 'made_at' => MADE_AT]]);
     expect($source->requests('stats'))->toHaveCount($before + 1);
 
     $source->respond('stats', statsText('Stats'), madeAt: MADE_AT);
-    RegionCache::flush();
-
     $screen->call('save');
+    RegionCache::flush();
     $server->resolve(fragments: ['stats' => ['cached' => true]]);
 
     expect($source->requests('stats'))->toHaveCount($before + 2)
@@ -663,4 +671,94 @@ it('declares cached copies on a call that asks for regions', function () {
 
     $server->resolve(fragments: ['stats' => ['cached' => true]]);
     cachedFrame($screen)->assertSee('Stats from the server');
+});
+
+it('refuses an undeclared cached answer on render as invalid without retrying', function () {
+    $heard = [];
+    Event::listen(ServerRegionFailed::class, function ($e) use (&$heard) {
+        $heard[] = [$e->region, $e->reason];
+    });
+    $source = Asgard::fakeFragmentSource();
+    $screen = Native::test(CachedRegionScreen::class);
+    $before = count($source->requests('stats'));
+
+    expect($source->respondCached('stats'))->toBeFalse();
+    ServerRegion::expire([$screen->instance()]);
+    cachedFrame($screen);
+
+    expect($heard)->toBe([['stats', 'invalid']])
+        ->and($source->requests('stats'))->toHaveCount($before);
+});
+
+it('refuses an undeclared cached part of a batch as invalid without retrying', function () {
+    $heard = [];
+    Event::listen(ServerRegionFailed::class, function ($e) use (&$heard) {
+        $heard[] = [$e->region, $e->reason];
+    });
+    $source = Asgard::fakeFragmentSource();
+    $screen = Native::test(CachedRegionScreen::class);
+    $before = count($source->requests('stats'));
+
+    $source->respondToBatch(fragments: [
+        'stats' => ['cached' => true],
+        'news' => ['fragment' => statsText('News'), 'made_at' => MADE_AT],
+    ]);
+    ServerRegion::expire([$screen->instance()]);
+    cachedFrame($screen)->assertSee('News');
+
+    expect($heard)->toBe([['stats', 'invalid']])
+        ->and($source->requests('stats'))->toHaveCount($before);
+});
+
+it('refuses an undeclared cached fragment on a call answer as invalid without retrying', function () {
+    $source = Asgard::fakeFragmentSource();
+    $server = Asgard::fakeServerTransport();
+    $screen = Native::test(CachedRegionScreen::class);
+    $before = count($source->requests('stats'));
+
+    $screen->call('save');
+    $server->resolve(fragments: ['stats' => ['cached' => true]]);
+    cachedFrame($screen)->assertSee('Loading stats…')->assertDontSee('Stats from the server');
+
+    expect($source->requests('stats'))->toHaveCount($before);
+});
+
+it('refuses a cached answer paired with invalidate as invalid instead of keeping the cached copy', function () {
+    $heard = [];
+    Event::listen(ServerRegionFailed::class, function ($e) use (&$heard) {
+        $heard[] = [$e->region, $e->reason];
+    });
+    $source = Asgard::fakeFragmentSource();
+    $screen = Native::test(CachedRegionScreen::class);
+    $source->respond('stats', statsText('Cached stats'), madeAt: MADE_AT);
+    $screen->instance()->refreshServerRegions('stats');
+    cachedFrame($screen);
+
+    $request = $source->lastRequest('stats');
+    expect($request->cache)->toHaveKey('stats')
+        ->and(ServerRegion::deliverCached($request, invalidate: true))->toBeFalse();
+
+    ServerRegion::expire([$screen->instance()]);
+    cachedFrame($screen);
+    expect($heard)->toBe([['stats', 'invalid']]);
+});
+
+it('stores null chrome in cache when invalid chrome is ignored under debug false', function () {
+    config(['app.debug' => false, 'midgard.asgard.cache.ttl' => 300]);
+    $source = Asgard::fakeFragmentSource();
+    ServerScreen::registerRoutes([['uri' => '/promos/{id}', 'screen' => 'promos.show']]);
+
+    $promo = Native::visit('/promos/1');
+    ServerRegion::deliver(
+        $source->lastRequest('screen'),
+        ['type' => 'text', 'props' => ['text' => 'Promo 1']],
+        chrome: ['nav_bar' => ['title' => 123]],
+        madeAt: MADE_AT,
+    );
+
+    $entry = RegionCache::get(RegionCache::key('promos.show', 'screen', ['id' => '1']));
+
+    expect($entry)->not->toBeNull()
+        ->and($entry['chrome'])->toBeNull()
+        ->and($promo->instance()->serverChrome()['nav_bar']['title'] ?? null)->not->toBe(123);
 });

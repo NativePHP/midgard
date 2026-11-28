@@ -6,6 +6,7 @@ use Native\Api\Client\Asgard\Attributes\Server;
 use Native\Api\Client\Asgard\ComponentState;
 use Native\Api\Client\Asgard\HttpFragmentSource;
 use Native\Api\Client\Asgard\RegionBatch;
+use Native\Api\Client\Asgard\RegionCache;
 use Native\Api\Client\Asgard\RegionRequest;
 use Native\Api\Client\Asgard\ServerMethods;
 use Native\Api\Client\Asgard\ServerRegion;
@@ -260,17 +261,25 @@ it('hands the delta of an HTTP render answer over', function () {
 });
 
 it('costs no repaint and keeps the push stream set for an empty or unchanged delta', function () {
+    config([
+        'midgard.asgard.base' => 'https://asgard.test/_asgard',
+        'midgard.asgard.cache.ttl' => 300,
+    ]);
     $source = Asgard::fakeFragmentSource();
     $screen = Native::test(StateScreen::class);
     $batch = $source->lastBatch();
-    $source->respondToBatch(fragments: ['stats' => ['fragment' => stateText('Stats 1')], 'feed' => ['fragment' => stateText('Feed 1')]]);
+    $source->respondToBatch(fragments: [
+        'stats' => ['fragment' => stateText('Stats 1'), 'made_at' => Carbon::now()->getTimestampMs()],
+        'feed' => ['fragment' => stateText('Feed 1')],
+    ]);
     stateFrame($screen);
     $watching = $source->watching();
 
-    // A cached answer for a copy the device does not hold paints nothing
-    // (it asks again), so only the delta could ask for a frame.
+    // A cached answer for a copy the device lost after declaring it paints
+    // nothing (it asks again), so only the delta could ask for a frame.
     $screen->instance()->refreshServerRegions('stats');
     stateFrame($screen);
+    RegionCache::flush();
     $source->respondCached('stats', delta: ['count' => 0, 'range' => '7d']);
 
     expect(ServerRegion::repaintPending())->toBeFalse()
@@ -281,10 +290,16 @@ it('costs no repaint and keeps the push stream set for an empty or unchanged del
         ->and(ServerRegion::subscriptions()[0]['state'])->toBe($batch->state());
 
     // A delta that changes something asks for a frame.
+    $source->respond('stats', stateText('Stats 1'), madeAt: Carbon::now()->getTimestampMs());
+    stateFrame($screen);
+    $screen->instance()->refreshServerRegions('stats');
+    stateFrame($screen);
+    RegionCache::flush();
     $source->respondCached('stats', delta: ['count' => 1]);
 
     expect(ServerRegion::repaintPending())->toBeTrue()
         ->and($screen->get('count'))->toBe(1);
+    RegionCache::flush();
 });
 
 it('runs a delta against a server screen through the same rules, which set nothing', function () {
